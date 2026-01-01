@@ -1,0 +1,23 @@
+RAW
+  Ariba forwarded email
+        |
+        v
+  Raw invoice files directory (xlsx)
+
+LEDGERS (append-only)
+  invoice_file_registry_ledger
+        |
+        v
+  invoice_parse_run_ledger
+     |      |        |
+     v      v        v
+  header   line   parse_issues (opt)
+
+CERTIFIED
+  certified_invoice_header_current  (effective invoice version)
+        |
+        v
+  certified_invoice_line_current    (lines for effective invoice)
+
+(optional)
+  certified_invoice_version_history (shows all versions + which is effective)
