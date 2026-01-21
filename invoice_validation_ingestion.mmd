@@ -22,46 +22,48 @@ flowchart LR
   %% =========================
   %% ETLs
   %% =========================
-  ETL1["ETL 1: Scope Package Intake<br>(Streamlit-triggered)"]:::etl
-  ETL2["ETL 2: Azure Survey Evidence"]:::etl
-  ETL3["ETL 3: GCP Images Evidence"]:::etl
-  ETL4["ETL 4: Deliveries Evidence"]:::etl
-  ETL5["ETL 5: Invoice Lines"]:::etl
-  ETL6["ETL 6: Eligibility Snapshot Publisher<br>(Official as-of snapshot)"]:::etl
-  ETL7["ETL 7 (Optional): Vendor SharePoint Export Publisher"]:::etl
+  ETL1["ETL-001: Scope Package Intake<br>(Streamlit-triggered)"]:::etl
+  ETL2["ETL-002: Azure Survey Evidence"]:::etl
+  ETL3["ETL-003: GCP Images Evidence"]:::etl
+  ETL4["ETL-004: Deliveries Evidence"]:::etl
+  ETL5["ETL-005: Invoice Lines"]:::etl
+  ETL6["ETL-006: Eligibility Snapshot Publisher<br>(Official as-of snapshot)"]:::etl
+  ETL7["ETL-007 (Optional): Vendor SharePoint Export Publisher"]:::etl
 
   %% =========================
   %% Bronze tables
   %% =========================
-  B1["bronze.scope_package_upload"]:::bronze
-  B2["bronze.scope_package_rows_raw"]:::bronze
-  B3["bronze.azure_survey_raw"]:::bronze
-  B4["bronze.gcp_images_raw"]:::bronze
-  B5["bronze.deliveries_raw"]:::bronze
-  B6["bronze.invoice_lines_raw"]:::bronze
+  B1["BRONZE.raw_scope_package_upload"]:::bronze
+  B2["BRONZE.raw_scope_package_row"]:::bronze
+  B3["BRONZE.raw_azure_survey"]:::bronze
+  B4["BRONZE.raw_gcp_image_metadata"]:::bronze
+  B5["BRONZE.raw_gcp_delivery"]:::bronze
+  B6["BRONZE.raw_ap_invoice_line"]:::bronze
 
   %% =========================
   %% Silver tables
   %% =========================
-  S1["silver.scope_package_header"]:::silver
-  S2["silver.scope_package_lines<br>(scope_package_id x floc_id)"]:::silver
-  S3["silver.scope_assignment_history<br>(effective-dated)"]:::silver
-  S4["silver.evidence_survey_by_package_floc"]:::silver
-  S5["silver.evidence_gcp_images_by_package_floc"]:::silver
-  S6["silver.evidence_deliveries_by_package_floc"]:::silver
-  S7["silver.invoice_line_fact<br>(invoice_id x scope_package_id x floc_id)"]:::silver
+  S1["SILVER.scope_package_header"]:::silver
+  S2["SILVER.scope_package_line<br>(scope_package_id x floc_id)"]:::silver
+  S3["SILVER.scope_assignment_history<br>(effective-dated)"]:::silver
+
+  S4["SILVER.evidence_azure_survey_by_scope_package_floc"]:::silver
+  S5["SILVER.evidence_gcp_images_by_scope_package_floc"]:::silver
+  S6["SILVER.evidence_gcp_deliveries_by_scope_package_floc"]:::silver
+
+  S7["SILVER.invoice_line_fact<br>(invoice_id x scope_package_id x floc_id)"]:::silver
 
   %% =========================
   %% Gold tables/views
   %% =========================
-  G1["gold.scope_assignment_current"]:::gold
-  G2["gold.invoice_eligibility_snapshot_line<br>(snapshot_id x package x floc)"]:::gold
-  G3["gold.invoice_eligibility_snapshot_package_summary<br>(snapshot_id x package)"]:::gold
+  G1["GOLD.scope_assignment_current"]:::gold
+  G2["GOLD.invoice_eligibility_snapshot_line<br>(snapshot_id x package x floc)"]:::gold
+  G3["GOLD.invoice_eligibility_snapshot_scope_package_summary<br>(snapshot_id x package)"]:::gold
 
-  GV1["gold.vw_vendor_invoice_ledger_current<br>(latest snapshot)"]:::gold
-  GV2["gold.vw_vendor_approved_to_invoice"]:::gold
-  GV3["gold.vw_vendor_blocked_items"]:::gold
-  GV4["gold.vw_vendor_invoiced_paid_history"]:::gold
+  GV1["GOLD.vw_vendor_invoice_ledger_current<br>(latest snapshot)"]:::gold
+  GV2["GOLD.vw_vendor_approved_to_invoice"]:::gold
+  GV3["GOLD.vw_vendor_blocked_items"]:::gold
+  GV4["GOLD.vw_vendor_invoiced_paid_history"]:::gold
 
   %% =========================
   %% ETL 1 flow
