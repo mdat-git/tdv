@@ -1,0 +1,135 @@
+flowchart LR
+  %% =========================
+  %% Styles
+  %% =========================
+  classDef bronze fill:#b87333,stroke:#5a3318,color:#fff,stroke-width:1px;
+  classDef silver fill:#c0c0c0,stroke:#555,color:#111,stroke-width:1px;
+  classDef gold fill:#d4af37,stroke:#6b5b1a,color:#111,stroke-width:1px;
+  classDef ext fill:#1f6feb,stroke:#0b2f5b,color:#fff,stroke-width:1px;
+  classDef etl fill:#111827,stroke:#374151,color:#fff,stroke-width:1px;
+
+  %% =========================
+  %% External inputs
+  %% =========================
+  SPCSV["Scope Package CSV Upload<br>(Streamlit)"]:::ext
+  AZ["Azure Surveys Source"]:::ext
+  GCPIMG["GCP Images Metadata Source"]:::ext
+  DELIV["Deliveries Source"]:::ext
+  INV["Invoice Lines Source<br>(includes scope_package_id + floc_id)"]:::ext
+  VSP["Vendor SharePoint Site"]:::ext
+  PBI["Power BI Dashboard"]:::ext
+
+  %% =========================
+  %% ETLs
+  %% =========================
+  ETL1["ETL 1: Scope Package Intake<br>(Streamlit-triggered)"]:::etl
+  ETL2["ETL 2: Azure Survey Evidence"]:::etl
+  ETL3["ETL 3: GCP Images Evidence"]:::etl
+  ETL4["ETL 4: Deliveries Evidence"]:::etl
+  ETL5["ETL 5: Invoice Lines"]:::etl
+  ETL6["ETL 6: Eligibility Snapshot Publisher<br>(Official as-of snapshot)"]:::etl
+  ETL7["ETL 7 (Optional): Vendor SharePoint Export Publisher"]:::etl
+
+  %% =========================
+  %% Bronze tables
+  %% =========================
+  B1["bronze.scope_package_upload"]:::bronze
+  B2["bronze.scope_package_rows_raw"]:::bronze
+  B3["bronze.azure_survey_raw"]:::bronze
+  B4["bronze.gcp_images_raw"]:::bronze
+  B5["bronze.deliveries_raw"]:::bronze
+  B6["bronze.invoice_lines_raw"]:::bronze
+
+  %% =========================
+  %% Silver tables
+  %% =========================
+  S1["silver.scope_package_header"]:::silver
+  S2["silver.scope_package_lines<br>(scope_package_id x floc_id)"]:::silver
+  S3["silver.scope_assignment_history<br>(effective-dated)"]:::silver
+  S4["silver.evidence_survey_by_package_floc"]:::silver
+  S5["silver.evidence_gcp_images_by_package_floc"]:::silver
+  S6["silver.evidence_deliveries_by_package_floc"]:::silver
+  S7["silver.invoice_line_fact<br>(invoice_id x scope_package_id x floc_id)"]:::silver
+
+  %% =========================
+  %% Gold tables/views
+  %% =========================
+  G1["gold.scope_assignment_current"]:::gold
+  G2["gold.invoice_eligibility_snapshot_line<br>(snapshot_id x package x floc)"]:::gold
+  G3["gold.invoice_eligibility_snapshot_package_summary<br>(snapshot_id x package)"]:::gold
+
+  GV1["gold.vw_vendor_invoice_ledger_current<br>(latest snapshot)"]:::gold
+  GV2["gold.vw_vendor_approved_to_invoice"]:::gold
+  GV3["gold.vw_vendor_blocked_items"]:::gold
+  GV4["gold.vw_vendor_invoiced_paid_history"]:::gold
+
+  %% =========================
+  %% ETL 1 flow
+  %% =========================
+  SPCSV --> ETL1
+  ETL1 --> B1
+  ETL1 --> B2
+  B1 --> S1
+  B2 --> S2
+  S2 --> S3
+  S3 --> G1
+
+  %% =========================
+  %% ETL 2 flow (Azure surveys)
+  %% =========================
+  AZ --> ETL2
+  ETL2 --> B3
+  B3 --> S4
+
+  %% =========================
+  %% ETL 3 flow (GCP images)
+  %% =========================
+  GCPIMG --> ETL3
+  ETL3 --> B4
+  B4 --> S5
+
+  %% =========================
+  %% ETL 4 flow (Deliveries)
+  %% =========================
+  DELIV --> ETL4
+  ETL4 --> B5
+  B5 --> S6
+
+  %% =========================
+  %% ETL 5 flow (Invoice lines)
+  %% =========================
+  INV --> ETL5
+  ETL5 --> B6
+  B6 --> S7
+
+  %% =========================
+  %% ETL 6 flow (Eligibility snapshot)
+  %% =========================
+  G1 --> ETL6
+  S4 --> ETL6
+  S5 --> ETL6
+  S6 --> ETL6
+  S7 --> ETL6
+
+  ETL6 --> G2
+  ETL6 --> G3
+
+  G2 --> GV1
+  G2 --> GV2
+  G2 --> GV3
+  G2 --> GV4
+
+  %% =========================
+  %% Power BI consumption
+  %% =========================
+  GV1 --> PBI
+  GV2 --> PBI
+  GV3 --> PBI
+  GV4 --> PBI
+
+  %% =========================
+  %% ETL 7 flow (Vendor export)
+  %% =========================
+  G2 --> ETL7
+  G3 --> ETL7
+  ETL7 --> VSP
