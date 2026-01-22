@@ -29,11 +29,12 @@ def require_not_null(df: pd.DataFrame, cols: Iterable[str]) -> None:
     if missing:
         raise ValidationError(f"Columns for not-null check are missing: {missing}")
 
-    null_counts = df[cols].isna().sum()
-    bad = {c: int(null_counts[c]) for c in cols if int(null_counts[c]) > 0}
+    # Convert to a plain dict: {col: null_count}
+    null_counts = df[cols].isna().sum().to_dict()
+
+    bad = {c: int(null_counts.get(c, 0)) for c in cols if int(null_counts.get(c, 0)) > 0}
     if bad:
         raise ValidationError(f"Nulls found in not-null columns: {bad}")
-
 
 def validate(df: pd.DataFrame, contract: Contract) -> None:
     require_columns(df, contract.required_cols)
