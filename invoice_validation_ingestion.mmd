@@ -11,18 +11,18 @@ flowchart LR
   %% =========================
   %% External inputs
   %% =========================
-  SPCSV["Scope Package CSV Upload<br>(Streamlit)"]:::ext
+  RELCSV["Vendor Release CSV Upload<br>(Streamlit)<br>(full refresh per vendor)"]:::ext
   AZ["Azure Surveys Source"]:::ext
   GCPIMG["GCP Images Metadata Source"]:::ext
   DELIV["Deliveries Source"]:::ext
-  INV["Invoice Lines Source<br>(includes scope_package_id + floc_id)"]:::ext
+  INV["Invoice Lines Source<br>(includes scope_id + floc_id)"]:::ext
   VSP["Vendor SharePoint Site"]:::ext
   PBI["Power BI Dashboard"]:::ext
 
   %% =========================
   %% ETLs
   %% =========================
-  ETL1["ETL-001: Scope Package Intake<br>(Streamlit-triggered)"]:::etl
+  ETL1["ETL-001: Release Intake + Delta Detection<br>(Streamlit-triggered)"]:::etl
   ETL2["ETL-002: Azure Survey Evidence"]:::etl
   ETL3["ETL-003: GCP Images Evidence"]:::etl
   ETL4["ETL-004: Deliveries Evidence"]:::etl
@@ -33,8 +33,8 @@ flowchart LR
   %% =========================
   %% Bronze tables
   %% =========================
-  B1["BRONZE.raw_scope_package_upload"]:::bronze
-  B2["BRONZE.raw_scope_package_row"]:::bronze
+  B1["BRONZE.raw_scope_release_upload"]:::bronze
+  B2["BRONZE.raw_scope_release_row"]:::bronze
   B3["BRONZE.raw_azure_survey"]:::bronze
   B4["BRONZE.raw_gcp_image_metadata"]:::bronze
   B5["BRONZE.raw_gcp_delivery"]:::bronze
@@ -43,9 +43,10 @@ flowchart LR
   %% =========================
   %% Silver tables
   %% =========================
-  S1["SILVER.scope_package_header"]:::silver
-  S2["SILVER.scope_package_line<br>(scope_package_id x floc_id)"]:::silver
-  S3["SILVER.scope_assignment_history<br>(effective-dated)"]:::silver
+  S1["SILVER.scope_release_header<br>(vendor_id x release_id)"]:::silver
+  S2["SILVER.scope_release_line<br>(vendor_id x release_id x scope_id x floc_id)"]:::silver
+
+  S3["SILVER.scope_assignment_history<br>(effective-dated)<br>(derived from successive releases)"]:::silver
 
   S4["SILVER.evidence_azure_survey_by_scope_package_floc"]:::silver
   S5["SILVER.evidence_gcp_images_by_scope_package_floc"]:::silver
@@ -66,13 +67,16 @@ flowchart LR
   GV4["GOLD.vw_vendor_invoiced_paid_history"]:::gold
 
   %% =========================
-  %% ETL 1 flow
+  %% ETL 1 flow (Release Intake)
   %% =========================
-  SPCSV --> ETL1
+  RELCSV --> ETL1
   ETL1 --> B1
   ETL1 --> B2
+
   B1 --> S1
   B2 --> S2
+
+  %% Delta detection / history derivation
   S2 --> S3
   S3 --> G1
 
