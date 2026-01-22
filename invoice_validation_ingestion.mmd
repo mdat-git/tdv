@@ -13,8 +13,7 @@ flowchart LR
   %% =========================
   RELCSV["Vendor Release CSV Upload<br>(Streamlit)<br>(full refresh per vendor)"]:::ext
   AZ["Azure Surveys Source"]:::ext
-  GCPIMG["GCP Images Metadata Source"]:::ext
-  DELIV["Deliveries Source"]:::ext
+  GCPIMG["GCP Images Metadata Source<br>(= Deliveries Evidence for now)"]:::ext
   INV["Invoice Lines Source<br>(includes scope_id + floc_id)"]:::ext
   VSP["Vendor SharePoint Site"]:::ext
   PBI["Power BI Dashboard"]:::ext
@@ -24,8 +23,8 @@ flowchart LR
   %% =========================
   ETL1["ETL-001: Release Intake + Delta Detection<br>(Streamlit-triggered)"]:::etl
   ETL2["ETL-002: Azure Survey Evidence"]:::etl
-  ETL3["ETL-003: GCP Images Evidence"]:::etl
-  ETL4["ETL-004: Deliveries Evidence"]:::etl
+  ETL3["ETL-003: GCP Images Evidence<br>(incl. Deliveries for now)"]:::etl
+  ETL4["ETL-004: Deliveries Evidence<br>(DEFERRED - separate dataset/QC later)"]:::etl
   ETL5["ETL-005: Invoice Lines"]:::etl
   ETL6["ETL-006: Eligibility Snapshot Publisher<br>(Official as-of snapshot)"]:::etl
   ETL7["ETL-007 (Optional): Vendor SharePoint Export Publisher"]:::etl
@@ -37,7 +36,6 @@ flowchart LR
   B2["BRONZE.raw_scope_release_row"]:::bronze
   B3["BRONZE.raw_azure_survey"]:::bronze
   B4["BRONZE.raw_gcp_image_metadata"]:::bronze
-  B5["BRONZE.raw_gcp_delivery"]:::bronze
   B6["BRONZE.raw_ap_invoice_line"]:::bronze
 
   %% =========================
@@ -48,18 +46,17 @@ flowchart LR
 
   S3["SILVER.scope_assignment_history<br>(effective-dated)<br>(derived from successive releases)"]:::silver
 
-  S4["SILVER.evidence_azure_survey_by_scope_package_floc"]:::silver
-  S5["SILVER.evidence_gcp_images_by_scope_package_floc"]:::silver
-  S6["SILVER.evidence_gcp_deliveries_by_scope_package_floc"]:::silver
+  S4["SILVER.evidence_azure_survey_by_vendor_scope_floc"]:::silver
+  S5["SILVER.evidence_gcp_images_by_vendor_scope_floc"]:::silver
 
-  S7["SILVER.invoice_line_fact<br>(invoice_id x scope_package_id x floc_id)"]:::silver
+  S7["SILVER.invoice_line_fact<br>(invoice_id x vendor_id x scope_id x floc_id)"]:::silver
 
   %% =========================
   %% Gold tables/views
   %% =========================
   G1["GOLD.scope_assignment_current"]:::gold
-  G2["GOLD.invoice_eligibility_snapshot_line<br>(snapshot_id x package x floc)"]:::gold
-  G3["GOLD.invoice_eligibility_snapshot_scope_package_summary<br>(snapshot_id x package)"]:::gold
+  G2["GOLD.invoice_eligibility_snapshot_line<br>(snapshot_id x vendor x scope x floc)"]:::gold
+  G3["GOLD.invoice_eligibility_snapshot_scope_summary<br>(snapshot_id x vendor x scope)"]:::gold
 
   GV1["GOLD.vw_vendor_invoice_ledger_current<br>(latest snapshot)"]:::gold
   GV2["GOLD.vw_vendor_approved_to_invoice"]:::gold
@@ -88,18 +85,11 @@ flowchart LR
   B3 --> S4
 
   %% =========================
-  %% ETL 3 flow (GCP images)
+  %% ETL 3 flow (GCP images = deliveries for now)
   %% =========================
   GCPIMG --> ETL3
   ETL3 --> B4
   B4 --> S5
-
-  %% =========================
-  %% ETL 4 flow (Deliveries)
-  %% =========================
-  DELIV --> ETL4
-  ETL4 --> B5
-  B5 --> S6
 
   %% =========================
   %% ETL 5 flow (Invoice lines)
@@ -114,7 +104,6 @@ flowchart LR
   G1 --> ETL6
   S4 --> ETL6
   S5 --> ETL6
-  S6 --> ETL6
   S7 --> ETL6
 
   ETL6 --> G2
