@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -22,7 +22,7 @@ class RunLog:
     ended_at_utc: Optional[str] = None
     status: str = "RUNNING"  # RUNNING | SUCCESS | FAILED
     message: Optional[str] = None
-    metrics: Dict[str, Any] = None
+    metrics: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def partitions(self) -> Dict[str, str]:
@@ -36,8 +36,9 @@ def start_run(pipeline: str, *, metrics: Optional[Dict[str, Any]] = None) -> Run
         run_date=parts["run_date"],
         run_id=parts["run_id"],
         started_at_utc=_utc_now_iso(),
-        metrics=metrics or {},
     )
+    if metrics:
+        run.metrics.update(metrics)
     write_run(run)
     return run
 
@@ -62,7 +63,6 @@ def fail_run(run: RunLog, *, message: str, metrics: Optional[Dict[str, Any]] = N
 
 
 def run_log_path(run: RunLog) -> Path:
-    # LAKEHOUSE/util/ingest_runs/CURRENT/run_date=.../run_id=.../run.json
     base = paths.local_dir(
         "util",
         "ingest_runs",
@@ -76,6 +76,5 @@ def run_log_path(run: RunLog) -> Path:
 def write_run(run: RunLog) -> None:
     p = run_log_path(run)
     payload = asdict(run)
-    payload["metrics"] = payload.get("metrics") or {}
     with p.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
