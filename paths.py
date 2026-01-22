@@ -1,115 +1,109 @@
 from __future__ import annotations
 
 import os
-import re
+import uuid
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Dict, Optional, Literal
 
+# ----------------------------
+# Types
+# ----------------------------
 Backend = Literal["local", "snowflake"]
+Layer = Literal["bronze", "silver", "gold", "util"]
 Version = Literal["CURRENT", "HISTORY"]
 
-# ---- env knobs (keep these few + obvious) ----
+# ----------------------------
+# Env vars (keep these minimal)
+# ----------------------------
 ENV_BACKEND = "INSPECTIONS_BACKEND"                 # local | snowflake
-ENV_LAKEHOUSE_ROOT = "INSPECTIONS_LAKEHOUSE_ROOT"   # default: <repo>/LAKEHOUSE
+ENV_LAKEHOUSE_ROOT = "INSPECTIONS_LAKEHOUSE_ROOT"   # local root for LAKEHOUSE
+ENV_UPLOADS_ROOT = "INSPECTIONS_UPLOADS_ROOT"       # where raw incoming files are stored
 
+# Snowflake (later)
 ENV_SF_DATABASE = "INSPECTIONS_SF_DATABASE"         # e.g. TDINSPECTIONS_INFRA
-ENV_SF_SCHEMA_BRONZE = "INSPECTIONS_SF_SCHEMA_BRONZE"  # default BRONZE
-ENV_SF_SCHEMA_SILVER = "INSPECTIONS_SF_SCHEMA_SILVER"  # default SILVER
-ENV_SF_SCHEMA_GOLD = "INSPECTIONS_SF_SCHEMA_GOLD"      # default GOLD
-ENV_SF_SCHEMA_UTIL = "INSPECTIONS_SF_SCHEMA_UTIL"      # default UTIL
+ENV_SF_SCHEMA_BRONZE = "INSPECTIONS_SF_SCHEMA_BRONZE"
+ENV_SF_SCHEMA_SILVER = "INSPECTIONS_SF_SCHEMA_SILVER"
+ENV_SF_SCHEMA_GOLD = "INSPECTIONS_SF_SCHEMA_GOLD"
+ENV_SF_SCHEMA_UTIL = "INSPECTIONS_SF_SCHEMA_UTIL"
+ENV_SF_STAGE_BRONZE = "INSPECTIONS_SF_STAGE_BRONZE"  # e.g. @DB.BRONZE.BRONZE_STAGE
 
-ENV_SF_STAGE_BRONZE = "INSPECTIONS_SF_STAGE_BRONZE"    # e.g. @TD...BRONZE.BRONZE_STAGE
-ENV_SF_STAGE_SILVER = "INSPECTIONS_SF_STAGE_SILVER"    # optional
-ENV_SF_STAGE_GOLD = "INSPECTIONS_SF_STAGE_GOLD"        # optional
+# ----------------------------
+# Defaults (edit these once for your machine)
+# ----------------------------
+DEFAULT_LOCAL_LAKEHOUSE_ROOT = Path(r"C:\Users\YOUR_USER\OneDrive - YOUR_ORG\LAKEHOUSE")
+DEFAULT_LOCAL_UPLOADS_ROOT = Path(r"C:\Users\YOUR_USER\OneDrive - YOUR_ORG\Inspections_Uploads")
+
+DEFAULT_SF_DATABASE = "TDINSPECTIONS_INFRA"
+DEFAULT_SF_SCHEMA_BRONZE = "BRONZE"
+DEFAULT_SF_SCHEMA_SILVER = "SILVER"
+DEFAULT_SF_SCHEMA_GOLD = "GOLD"
+DEFAULT_SF_SCHEMA_UTIL = "UTIL"
+DEFAULT_SF_STAGE_BRONZE = "@TDINSPECTIONS_INFRA.BRONZE.BRONZE_STAGE"
 
 
-def _slug(s: str) -> str:
-    """Filesystem + identifier safe-ish: letters/numbers/_ only (simple on purpose)."""
-    s = s.strip().replace(" ", "_")
-    s = re.sub(r"[^A-Za-z0-9_]+", "", s)
-    return s
+# ----------------------------
+# Tiny helpers
+# ----------------------------
+def today_ymd() -> str:
+    return date.today().isoformat()
 
 
-def _repo_root() -> Path:
+def new_run_id() -> str:
+    return uuid.uuid4().hex
+
+
+def default_partitions(*, run_date: Optional[str] = None, run_id: Optional[str] = None) -> Dict[str, str]:
     """
-    Find repo root by walking up until pyproject.toml exists.
-    Simple + reliable, avoids hardcoding.
+    Standard partition keys for immutable outputs. ETLs should call this, not hardcode.
     """
-    cur = Path(__file__).resolve()
-    for _ in range(20):
-        if (cur / "pyproject.toml").exists():
-            return cur
-        if cur.parent == cur:
-            break
-        cur = cur.parent
-    # If this fails, user can set INSPECTIONS_LAKEHOUSE_ROOT explicitly.
-    return Path.cwd().resolve()
+    return {
+        "run_date": run_date or today_ymd(),
+        "run_id": run_id or new_run_id(),
+    }
 
 
-def _layer_to_schema(layer: str, bronze: str, silver: str, gold: str, util: str) -> str:
-    layer = layer.lower()
-    if layer == "bronze":
-        return bronze
-    if layer == "silver":
-        return silver
-    if layer == "gold":
-        return gold
-    if layer == "util":
-        return util
-    raise ValueError(f"Invalid layer: {layer}. Use bronze/silver/gold/util.")
-
-
-def _layer_to_stage(layer: str, bronze: str, silver: str, gold: str) -> str:
-    layer = layer.lower()
-    if layer == "bronze":
-        return bronze
-    if layer == "silver":
-        return silver
-    if layer == "gold":
-        return gold
-    raise ValueError(f"Invalid stage layer: {layer}. Use bronze/silver/gold.")
-
-
-def _partition_suffix(partitions: Optional[Dict[str, str]]) -> str:
+def _partitions_local(partitions: Optional[Dict[str, str]]) -> Path:
     """
-    Returns: /k=v/k2=v2 (stable order for traceability)
+    Convert {"k":"v"} into Path("k=v/k2=v2") with stable ordering.
+    """
+    if not partitions:
+        return Path()
+    parts = [f"{k}={partitions[k]}" for k in sorted(partitions.keys())]
+    return Path(*parts)
+
+
+def _partitions_stage(partitions: Optional[Dict[str, str]]) -> str:
+    """
+    Convert {"k":"v"} into "k=v/k2=v2" with stable ordering.
     """
     if not partitions:
         return ""
-    parts = []
-    for k in sorted(partitions.keys()):
-        parts.append(f"{_slug(k)}={_slug(str(partitions[k]))}")
-    return "/" + "/".join(parts)
+    return "/".join([f"{k}={partitions[k]}" for k in sorted(partitions.keys())])
 
 
+# ----------------------------
+# Paths object
+# ----------------------------
 @dataclass(frozen=True)
 class Paths:
-    """
-    One object. Simple methods.
-    - local_dir(...) -> Path
-    - sf_table(...) -> "DB.SCHEMA.TABLE"
-    - sf_stage_uri(...) -> "@DB.SCHEMA.STAGE/prefix/..."
-    """
-
     backend: Backend
     lakehouse_root: Path
+    uploads_root: Path
 
-    # Snowflake naming
+    # Snowflake config (later)
     sf_database: str
     sf_schema_bronze: str
     sf_schema_silver: str
     sf_schema_gold: str
     sf_schema_util: str
-
     sf_stage_bronze: str
-    sf_stage_silver: str
-    sf_stage_gold: str
 
-    # -------- local filesystem --------
+    # ---- Local filesystem ----
     def local_dir(
         self,
-        layer: str,
+        layer: Layer,
         dataset: str,
         version: Version = "CURRENT",
         *,
@@ -118,88 +112,66 @@ class Paths:
         ensure: bool = False,
     ) -> Path:
         """
-        <LAKEHOUSE>/<layer>/(<subject>/)<dataset>/<CURRENT|HISTORY>/(k=v/...)?
+        LAKEHOUSE/<layer>/(<subject>/)<dataset>/<CURRENT|HISTORY>/(k=v/...)?
         """
-        layer = layer.lower()
-        dataset = _slug(dataset)
-        base = self.lakehouse_root / layer
+        p = self.lakehouse_root / layer
         if subject:
-            base = base / _slug(subject)
-        p = base / dataset / version
-        if partitions:
-            for k in sorted(partitions.keys()):
-                p = p / f"{_slug(k)}={_slug(str(partitions[k]))}"
+            p = p / subject
+        p = p / dataset / version
+        p = p / _partitions_local(partitions)
         if ensure:
             p.mkdir(parents=True, exist_ok=True)
         return p
 
-    # -------- snowflake identifiers --------
-    def sf_table(
+    def uploads_dir(
         self,
-        layer: str,
-        dataset: str,
+        category: str,
         *,
-        subject: Optional[str] = None,
-        version: Optional[Version] = None,
-    ) -> str:
+        partitions: Optional[Dict[str, str]] = None,
+        ensure: bool = False,
+    ) -> Path:
         """
-        Returns fully qualified table name.
-        Convention (simple + consistent):
-          DB.<SCHEMA>.<SUBJECT__DATASET>  (subject optional)
-        You can optionally include version in the name if you want (rare for tables):
-          ..._<CURRENT|HISTORY>
+        UPLOADS/<category>/(k=v/...)?
         """
-        schema = _layer_to_schema(
-            layer,
-            bronze=self.sf_schema_bronze,
-            silver=self.sf_schema_silver,
-            gold=self.sf_schema_gold,
-            util=self.sf_schema_util,
-        )
-        name = _slug(dataset)
-        if subject:
-            name = f"{_slug(subject)}__{name}"
-        if version:
-            name = f"{name}__{version}"
+        p = self.uploads_root / category / _partitions_local(partitions)
+        if ensure:
+            p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    # ---- Snowflake identifiers (later) ----
+    def sf_table(self, layer: Literal["bronze", "silver", "gold", "util"], name: str) -> str:
+        schema = {
+            "bronze": self.sf_schema_bronze,
+            "silver": self.sf_schema_silver,
+            "gold": self.sf_schema_gold,
+            "util": self.sf_schema_util,
+        }[layer]
         return f"{self.sf_database}.{schema}.{name}"
 
-    def sf_stage_uri(
+    def sf_stage_prefix(
         self,
-        layer: str,
         dataset: str,
         version: Version = "CURRENT",
         *,
         subject: Optional[str] = None,
         partitions: Optional[Dict[str, str]] = None,
-        filename: Optional[str] = None,
     ) -> str:
         """
-        Returns a stage URI like:
-          @DB.SCHEMA.STAGE/subject/dataset/CURRENT/k=v/.../file.parquet
+        @STAGE/(<subject>/)<dataset>/<CURRENT|HISTORY>/(k=v/...)?
         """
-        stage = _layer_to_stage(
-            layer,
-            bronze=self.sf_stage_bronze,
-            silver=self.sf_stage_silver,
-            gold=self.sf_stage_gold,
-        )
-        dataset = _slug(dataset)
-
         prefix = ""
         if subject:
-            prefix += f"{_slug(subject)}/"
+            prefix += f"{subject}/"
         prefix += f"{dataset}/{version}"
-        prefix += _partition_suffix(partitions)
+        suffix = _partitions_stage(partitions)
+        if suffix:
+            prefix += f"/{suffix}"
+        return f"{self.sf_stage_bronze}/{prefix}"
 
-        if filename:
-            filename = filename.strip().lstrip("/")
-
-        return f"{stage}/{prefix}" + (f"/{filename}" if filename else "")
-
-    # -------- unified helpers (what ETLs should call) --------
-    def dataset_location(
+    # ---- Unified "where do I write dataset files?" ----
+    def write_target(
         self,
-        layer: str,
+        layer: Literal["bronze", "silver", "gold"],
         dataset: str,
         version: Version = "CURRENT",
         *,
@@ -208,50 +180,36 @@ class Paths:
         ensure_local: bool = False,
     ):
         """
-        One call for ETLs when you just want "where do I write?"
-        - local backend -> Path
-        - snowflake backend -> stage URI string
+        local -> Path
+        snowflake -> stage prefix string
         """
         if self.backend == "local":
             return self.local_dir(
                 layer, dataset, version, subject=subject, partitions=partitions, ensure=ensure_local
             )
-        # snowflake default for file-like writes: stage URI
-        return self.sf_stage_uri(layer, dataset, version, subject=subject, partitions=partitions)
+        return self.sf_stage_prefix(dataset, version, subject=subject, partitions=partitions)
 
 
 def get_paths() -> Paths:
-    backend = (os.getenv(ENV_BACKEND, "local") or "local").strip().lower()
+    backend = os.getenv(ENV_BACKEND, "local").strip().lower()
     if backend not in ("local", "snowflake"):
-        raise ValueError(f"{ENV_BACKEND} must be 'local' or 'snowflake' (got '{backend}')")
+        backend = "local"
 
-    # local root
-    override = os.getenv(ENV_LAKEHOUSE_ROOT)
-    if override:
-        root = Path(override).expanduser()
-        root = root if root.is_absolute() else (_repo_root() / root).resolve()
-    else:
-        root = (_repo_root() / "LAKEHOUSE").resolve()
-
-    # snowflake defaults
-    sf_db = os.getenv(ENV_SF_DATABASE, "TDINSPECTIONS_INFRA")
-    sf_b = os.getenv(ENV_SF_SCHEMA_BRONZE, "BRONZE")
-    sf_s = os.getenv(ENV_SF_SCHEMA_SILVER, "SILVER")
-    sf_g = os.getenv(ENV_SF_SCHEMA_GOLD, "GOLD")
-    sf_u = os.getenv(ENV_SF_SCHEMA_UTIL, "UTIL")
-
-    # stages: you can leave silver/gold as bronze stage if you want (simple default)
-    stage_b = os.getenv(ENV_SF_STAGE_BRONZE, "@TDINSPECTIONS_INFRA.BRONZE.BRONZE_STAGE")
-    stage_s = os.getenv(ENV_SF_STAGE_SILVER, stage_b)
-    stage_g = os.getenv(ENV_SF_STAGE_GOLD, stage_b)
+    lakehouse_root = Path(os.getenv(ENV_LAKEHOUSE_ROOT) or DEFAULT_LOCAL_LAKEHOUSE_ROOT)
+    uploads_root = Path(os.getenv(ENV_UPLOADS_ROOT) or DEFAULT_LOCAL_UPLOADS_ROOT)
 
     return Paths(
-        backend=backend, lakehouse_root=root,
-        sf_database=sf_db,
-        sf_schema_bronze=sf_b, sf_schema_silver=sf_s, sf_schema_gold=sf_g, sf_schema_util=sf_u,
-        sf_stage_bronze=stage_b, sf_stage_silver=stage_s, sf_stage_gold=stage_g,
+        backend=backend,
+        lakehouse_root=lakehouse_root,
+        uploads_root=uploads_root,
+        sf_database=os.getenv(ENV_SF_DATABASE, DEFAULT_SF_DATABASE),
+        sf_schema_bronze=os.getenv(ENV_SF_SCHEMA_BRONZE, DEFAULT_SF_SCHEMA_BRONZE),
+        sf_schema_silver=os.getenv(ENV_SF_SCHEMA_SILVER, DEFAULT_SF_SCHEMA_SILVER),
+        sf_schema_gold=os.getenv(ENV_SF_SCHEMA_GOLD, DEFAULT_SF_SCHEMA_GOLD),
+        sf_schema_util=os.getenv(ENV_SF_SCHEMA_UTIL, DEFAULT_SF_SCHEMA_UTIL),
+        sf_stage_bronze=os.getenv(ENV_SF_STAGE_BRONZE, DEFAULT_SF_STAGE_BRONZE),
     )
 
 
-# The one import everyone uses:
+# Import this in every ETL:
 paths = get_paths()
