@@ -10,6 +10,7 @@ from inspections_lakehouse.util.paths import paths
 from inspections_lakehouse.util.run_logging import RunLog
 
 
+
 # ----------------------------
 # Regex for Transmission packages
 # ----------------------------
@@ -19,6 +20,35 @@ _SCOPE_PKG_RE = re.compile(r"^Scope Package\s*#\s*(\d+)\s*$", re.IGNORECASE)
 # ----------------------------
 # Tiny helpers
 # ----------------------------
+
+EXPECTED_LINE_COLS = [
+    "execution_bucket",
+    "floc",
+    "scope_id",
+    "scope_removal_date",
+    "is_active",
+    "visit_no",
+    "scope_floc_key",
+    "vendor",
+    "run_date",
+    "run_id",
+    "source_file_saved",
+    "source_sheet",
+]
+
+def enforce_schema(df: pd.DataFrame, expected: list[str], *, context: str) -> pd.DataFrame:
+    missing = [c for c in expected if c not in df.columns]
+    extra = [c for c in df.columns if c not in expected]
+
+    for c in missing:
+        df[c] = pd.NA
+
+    df2 = df[expected].copy()
+    df2.attrs["schema_missing"] = missing
+    df2.attrs["schema_extra"] = extra
+    df2.attrs["schema_context"] = context
+    return df2
+
 def _strip_cols(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out.columns = [str(c).strip() for c in out.columns]
