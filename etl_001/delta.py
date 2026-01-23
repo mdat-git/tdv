@@ -5,30 +5,26 @@ from typing import Optional, Tuple
 
 import pandas as pd
 
-from inspections_lakehouse.util.hashing import row_hashes
 from inspections_lakehouse.util.paths import paths
 from inspections_lakehouse.util.dataset_io import write_dataset
+from inspections_lakehouse.util.hashing import row_hashes
+from inspections_lakehouse.util.scope_keys import add_business_key, REMOVAL_COL
 
 
-KEY_COLS = ["SCOPE_ID", "FLOC"]
-REMOVAL_COL = "SCOPE_REMOVAL_DATE"
-
-
-def _read_dataset_file(dir_path: Path) -> pd.DataFrame:
-    parquet = dir_path / "data.parquet"
-    csv = dir_path / "data.csv"
-    if parquet.exists():
-        return pd.read_parquet(parquet)
-    if csv.exists():
-        return pd.read_csv(csv)
+def _read_snapshot(dir_path: Path) -> pd.DataFrame:
+    p = dir_path / "data.parquet"
+    c = dir_path / "data.csv"
+    if p.exists():
+        return pd.read_parquet(p)
+    if c.exists():
+        return pd.read_csv(c)
     raise FileNotFoundError(f"No data.parquet or data.csv found in: {dir_path}")
 
 
-def _find_latest_prior_snapshot_dir(dataset: str, vendor: str, current_run_id: str) -> Optional[Path]:
+def _latest_prior_history_dir(dataset: str, vendor: str, current_run_id: str) -> Optional[Path]:
     """
-    Recursively find the most recent prior snapshot dir under:
-      bronze/<dataset>/HISTORY/vendor=<vendor>/...
-    Works with both old layouts (release=... folders) and new layouts.
+    Find latest prior snapshot for this vendor (works with old layouts containing extra folders like release=...).
+    Chooses by filesystem modified time.
     """
     base = paths.local_dir("bronze", dataset, "HISTORY", partitions={"vendor": vendor}, ensure=True)
 
@@ -38,50 +34,29 @@ def _find_latest_prior_snapshot_dir(dataset: str, vendor: str, current_run_id: s
     for f in base.rglob("data.csv"):
         candidates.append(f.parent)
 
+    # exclude current run
+    candidates = [d for d in candidates if f"run_id={current_run_id}" not in str(d)]
     if not candidates:
         return None
 
-    filtered = [d for d in candidates if f"run_id={current_run_id}" not in str(d)]
-    if not filtered:
-        return None
-
-    return max(filtered, key=lambda d: d.stat().st_mtime)
+    return max(candidates, key=lambda d: d.stat().st_mtime)
 
 
-def _require_cols(df: pd.DataFrame, cols: list[str], *, context: str) -> None:
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns in {context}: {missing}")
-
-
-def _make_key(df: pd.DataFrame) -> pd.Series:
-    # Normalize to strings for stable keys
-    scope = df["SCOPE_ID"].astype("string").fillna("").str.strip()
-    floc = df["FLOC"].astype("string").fillna("").str.strip()
-    return scope + "|" + floc
-
-
-def _is_active(df: pd.DataFrame) -> pd.Series:
+def _is_active(removal_series: pd.Series) -> pd.Series:
     """
-    Active = SCOPE_REMOVAL_DATE is null/empty.
-    We coerce to datetime; anything parseable -> removed (inactive).
+    Active if SCOPE_REMOVAL_DATE is null/empty/unparseable as datetime.
     """
-    raw = df[REMOVAL_COL]
-    # Treat empty strings as null
-    raw2 = raw.astype("string").replace({"": None, "nan": None, "NaT": None})
-    dt = pd.to_datetime(raw2, errors="coerce")
+    s = removal_series.astype("string").replace({"": None, "nan": None, "NaT": None})
+    dt = pd.to_datetime(s, errors="coerce")
     return dt.isna()
 
 
-def _check_unique_keys(df: pd.DataFrame, *, context: str) -> None:
-    k = _make_key(df)
-    dup = k.duplicated(keep=False)
-    if dup.any():
-        # Keep message short but actionable
-        sample = k[dup].value_counts().head(10).to_dict()
+def _ensure_unique_keys(df: pd.DataFrame, context: str) -> None:
+    if df["_key"].duplicated().any():
+        sample = df.loc[df["_key"].duplicated(keep=False), "_key"].value_counts().head(10).to_dict()
         raise ValueError(
-            f"Duplicate business keys detected in {context} for (SCOPE_ID,FLOC). "
-            f"Sample duplicates (key:count): {sample}"
+            f"Duplicate (SCOPE_ID,FLOC) keys in {context}. "
+            f"Likely collision (e.g., blank SCOPE_ID -> COMP). Sample: {sample}"
         )
 
 
@@ -92,135 +67,112 @@ def compute_key_delta(
     run_partitions: dict[str, str],
 ) -> Tuple[dict, Optional[Path]]:
     """
-    Key-based delta using (SCOPE_ID, FLOC) with soft-removal via SCOPE_REMOVAL_DATE.
+    Key-based delta using:
+      key = normalized SCOPE_ID (blank->COMP) + FLOC
+      active = SCOPE_REMOVAL_DATE is null
 
-    Writes HISTORY-only to:
-      silver/<dataset>_delta/HISTORY/vendor=.../run_date=.../run_id=.../{added|removed|updated}.parquet|csv
-
-    Returns:
-      (metrics, prev_snapshot_dir_or_none)
+    Writes HISTORY-only:
+      silver/<dataset>_delta/HISTORY/vendor=.../run_date=.../run_id=.../{added,removed,updated}.parquet|csv
     """
     run_id = run_partitions["run_id"]
 
-    cur_dir = paths.local_dir(
-        "bronze", dataset, "HISTORY",
-        partitions={"vendor": vendor, **run_partitions},
-        ensure=False,
-    )
-    prev_dir = _find_latest_prior_snapshot_dir(dataset, vendor, run_id)
+    cur_dir = paths.local_dir("bronze", dataset, "HISTORY", partitions={"vendor": vendor, **run_partitions}, ensure=False)
+    prev_dir = _latest_prior_history_dir(dataset, vendor, run_id)
 
-    # If no prior snapshot, we skip delta
     if prev_dir is None:
-        metrics = {
-            "delta_mode": "key_scope_floc",
-            "delta_previous_found": False,
-            "delta_current_dir": str(cur_dir),
-            "added_rows": 0,
-            "removed_rows": 0,
-            "updated_rows": 0,
-            "reactivated_rows": 0,
-            "note": "No prior snapshot found; delta skipped.",
-        }
-        return metrics, None
+        return (
+            {
+                "delta_mode": "key_scope_floc",
+                "delta_previous_found": False,
+                "delta_current_dir": str(cur_dir),
+                "added_rows": 0,
+                "removed_rows": 0,
+                "updated_rows": 0,
+                "note": "No prior snapshot found; delta skipped.",
+            },
+            None,
+        )
 
-    cur = _read_dataset_file(cur_dir)
-    prev = _read_dataset_file(prev_dir)
+    cur = _read_snapshot(cur_dir)
+    prev = _read_snapshot(prev_dir)
 
-    _require_cols(cur, KEY_COLS + [REMOVAL_COL], context=f"CURRENT snapshot {cur_dir}")
-    _require_cols(prev, KEY_COLS + [REMOVAL_COL], context=f"PREVIOUS snapshot {prev_dir}")
+    # Build business keys (blank SCOPE_ID => COMP) and active flags
+    cur = add_business_key(cur, key_col="_key")
+    prev = add_business_key(prev, key_col="_key")
 
-    _check_unique_keys(cur, context=f"CURRENT snapshot {cur_dir}")
-    _check_unique_keys(prev, context=f"PREVIOUS snapshot {prev_dir}")
+    if REMOVAL_COL not in cur.columns or REMOVAL_COL not in prev.columns:
+        raise ValueError(f"Missing required column '{REMOVAL_COL}' in one or both snapshots.")
 
-    cur_key = _make_key(cur)
-    prev_key = _make_key(prev)
+    cur["_is_active"] = _is_active(cur[REMOVAL_COL])
+    prev["_is_active"] = _is_active(prev[REMOVAL_COL])
 
-    cur_active = _is_active(cur)
-    prev_active = _is_active(prev)
+    _ensure_unique_keys(cur, context=f"CURRENT {cur_dir}")
+    _ensure_unique_keys(prev, context=f"PREVIOUS {prev_dir}")
 
-    cur2 = cur.copy()
-    prev2 = prev.copy()
-    cur2["_key"] = cur_key
-    prev2["_key"] = prev_key
-    cur2["_is_active"] = cur_active
-    prev2["_is_active"] = prev_active
+    cur_keys = set(cur["_key"])
+    prev_keys = set(prev["_key"])
+    both = cur_keys & prev_keys
+    only_cur = cur_keys - prev_keys
+    only_prev = prev_keys - cur_keys
 
-    cur_keys = set(cur2["_key"].tolist())
-    prev_keys = set(prev2["_key"].tolist())
-    keys_both = cur_keys & prev_keys
-    keys_only_cur = cur_keys - prev_keys
-    keys_only_prev = prev_keys - cur_keys
+    cur_active = dict(zip(cur["_key"], cur["_is_active"]))
+    prev_active = dict(zip(prev["_key"], prev["_is_active"]))
 
-    # Build quick lookup for active/inactive by key
-    cur_active_map = dict(zip(cur2["_key"], cur2["_is_active"]))
-    prev_active_map = dict(zip(prev2["_key"], prev2["_is_active"]))
+    # ADDED: new active keys OR reactivated keys
+    reactivated = {k for k in both if (not prev_active[k]) and cur_active[k]}
+    added_new = {k for k in only_cur if cur_active.get(k, False)}
+    added_keys = reactivated | added_new
 
-    # Added vs Reactivated (becomes active now)
-    reactivated_keys = {k for k in keys_both if (not prev_active_map[k]) and cur_active_map[k]}
-    new_added_keys = {k for k in keys_only_cur if cur_active_map[k]}
-    added_keys = reactivated_keys | new_added_keys
+    # REMOVED:
+    # - soft: was active, now inactive (removal date filled)
+    removed_soft = {k for k in both if prev_active[k] and (not cur_active[k])}
+    # - missing: was active, now missing entirely (rare; log it)
+    removed_missing = {k for k in only_prev if prev_active.get(k, False)}
+    removed_keys = removed_soft | removed_missing
 
-    # Removed (was active before, now not active OR missing)
-    removed_soft_keys = {k for k in keys_both if prev_active_map[k] and (not cur_active_map[k])}
-    removed_missing_keys = {k for k in keys_only_prev if prev_active_map[k]}
-    removed_keys = removed_soft_keys | removed_missing_keys
-
-    # Updated (active in both, but non-key attributes changed)
-    # Compare only common columns, excluding keys and removal date and our helper cols
+    # UPDATED: active in both, but non-key attributes changed
     common_cols = sorted(set(cur.columns) & set(prev.columns))
-    compare_cols = [c for c in common_cols if c not in (KEY_COLS + [REMOVAL_COL])]
-    # Only consider updates for keys that are active in both
-    active_both_keys = [k for k in keys_both if prev_active_map[k] and cur_active_map[k]]
+    ignore_cols = {"_key", "_is_active", REMOVAL_COL, "SCOPE_ID", "FLOC"}
+    compare_cols = [c for c in common_cols if c not in ignore_cols]
 
+    active_both = [k for k in both if prev_active[k] and cur_active[k]]
     updated_keys: set[str] = set()
-    if compare_cols and active_both_keys:
-        cur_active_df = cur2[cur2["_key"].isin(active_both_keys)].copy()
-        prev_active_df = prev2[prev2["_key"].isin(active_both_keys)].copy()
 
-        # Ensure stable row ordering by key
-        cur_active_df = cur_active_df.sort_values("_key")
-        prev_active_df = prev_active_df.sort_values("_key")
+    if compare_cols and active_both:
+        c = cur[cur["_key"].isin(active_both)].sort_values("_key")
+        p = prev[prev["_key"].isin(active_both)].sort_values("_key")
 
-        cur_sig = row_hashes(cur_active_df[compare_cols])
-        prev_sig = row_hashes(prev_active_df[compare_cols])
+        c_sig = row_hashes(c[compare_cols])
+        p_sig = row_hashes(p[compare_cols])
 
-        cur_active_df["_sig"] = cur_sig.values
-        prev_active_df["_sig"] = prev_sig.values
-
-        merged = prev_active_df[["_key", "_sig"]].merge(
-            cur_active_df[["_key", "_sig"]],
+        tmp = pd.DataFrame({"_key": c["_key"].to_list(), "_sig_cur": c_sig.to_list()}).merge(
+            pd.DataFrame({"_key": p["_key"].to_list(), "_sig_prev": p_sig.to_list()}),
             on="_key",
             how="inner",
-            suffixes=("_prev", "_cur"),
         )
-        updated_keys = set(merged.loc[merged["_sig_prev"] != merged["_sig_cur"], "_key"].tolist())
+        updated_keys = set(tmp.loc[tmp["_sig_cur"] != tmp["_sig_prev"], "_key"].to_list())
 
-    # Build delta frames
-    # Added rows come from current snapshot
-    added_df = cur2[cur2["_key"].isin(added_keys)].copy()
+    # Build output frames
+    added_df = cur[cur["_key"].isin(added_keys)].copy()
     added_df["_delta_type"] = "reactivated"
-    added_df.loc[added_df["_key"].isin(new_added_keys), "_delta_type"] = "added_new"
+    added_df.loc[added_df["_key"].isin(added_new), "_delta_type"] = "added_new"
 
-    # Removed rows:
-    # - soft removal -> take the current row (shows removal date)
-    # - missing -> take the previous row (last known)
-    removed_soft_df = cur2[cur2["_key"].isin(removed_soft_keys)].copy()
+    # removed rows: for soft removals use CURRENT (shows removal date); for missing use PREVIOUS (last known)
+    removed_soft_df = cur[cur["_key"].isin(removed_soft)].copy()
     removed_soft_df["_delta_type"] = "removed_soft"
 
-    removed_missing_df = prev2[prev2["_key"].isin(removed_missing_keys)].copy()
+    removed_missing_df = prev[prev["_key"].isin(removed_missing)].copy()
     removed_missing_df["_delta_type"] = "removed_missing_in_current"
 
     removed_df = pd.concat([removed_soft_df, removed_missing_df], ignore_index=True)
 
-    # Updated rows come from current snapshot (active)
-    updated_df = cur2[cur2["_key"].isin(updated_keys)].copy()
+    updated_df = cur[cur["_key"].isin(updated_keys)].copy()
     updated_df["_delta_type"] = "updated_active"
 
-    # Write outputs (HISTORY only)
-    delta_dataset = f"{dataset}_delta"
+    # Write outputs (Silver HISTORY-only)
     out_dir = paths.local_dir(
         "silver",
-        delta_dataset,
+        f"{dataset}_delta",
         "HISTORY",
         partitions={"vendor": vendor, **run_partitions},
         ensure=True,
@@ -245,7 +197,8 @@ def compute_key_delta(
         "delta_added_file": str(added_path),
         "delta_removed_file": str(removed_path),
         "delta_updated_file": str(updated_path),
-        "key_cols": KEY_COLS,
+        "key_cols": ["SCOPE_ID", "FLOC"],
+        "scope_blank_filled_with": "COMP",
         "removal_col": REMOVAL_COL,
     }
     return metrics, prev_dir
