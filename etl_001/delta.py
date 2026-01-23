@@ -196,7 +196,8 @@ def _transmission_keyed(df_raw: pd.DataFrame) -> pd.DataFrame:
     out["_is_active"] = _is_active_from_dt(removal_dt)
 
     out["_visit_no"] = pd.Series([pd.NA] * len(out), index=out.index, dtype="Int64")
-    out["_key"] = out["_scope_id"] + "|" + out["_floc"] + "|" + out["_visit_no"].astype("string")
+    out["_key"] = out["_scope_id"].astype("string") + "|" + out["_floc"].astype("string")
+
 
     return out
 
