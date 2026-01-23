@@ -15,8 +15,7 @@ from inspections_lakehouse.etl.etl_001_scope_release_intake.contract import CONT
 
 PIPELINE = "etl_001_scope_release_intake"
 
-# Separate bronze datasets (recommended)
-DATASETS = {
+SHEETS_TO_DATASETS: dict[str, str] = {
     "Distribution": "scope_release_distribution",
     "Transmission": "scope_release_transmission",
 }
@@ -26,45 +25,59 @@ def _read_sheet(xlsx_path: Path, sheet_name: str) -> pd.DataFrame:
     return pd.read_excel(xlsx_path, sheet_name=sheet_name)
 
 
-def run_pipeline(run: RunLog, *, input_path: str) -> None:
+def run_pipeline(run: RunLog, *, input_path: str, vendor: str, release: str | None) -> None:
     src = Path(input_path)
     if not src.exists():
         raise FileNotFoundError(f"Input file not found: {src}")
 
-    # 1) Save exact artifact (as-received)
-    uploads_dir = paths.uploads_dir("scope_release_intake", partitions=run.partitions, ensure=True)
+    # --- Save exact artifact (as received) ---
+    upload_parts: dict[str, str] = {"vendor": vendor, **run.partitions}
+    if release:
+        upload_parts["release"] = release
+
+    uploads_dir = paths.uploads_dir("scope_release_intake", partitions=upload_parts, ensure=True)
     saved_src = uploads_dir / src.name
     shutil.copy2(src, saved_src)
 
+    # Log basic provenance
     run.metrics.update(
         {
+            "vendor": vendor,
+            "release": release,
             "source_file_original": str(src),
             "source_file_saved": str(saved_src),
         }
     )
 
-    # 2) Read both base tabs, validate, write bronze
-    for sheet_name, dataset_name in DATASETS.items():
+    # Log discovered sheets (helps debugging)
+    xl = pd.ExcelFile(saved_src)
+    run.metrics["excel_sheet_names"] = xl.sheet_names
+
+    # --- For each sheet: read -> validate -> write bronze history/current (vendor-grain) ---
+    for sheet_name, dataset_name in SHEETS_TO_DATASETS.items():
         df = _read_sheet(saved_src, sheet_name)
 
-        # Optional: super-light normalization (safe for bronze)
-        # df.columns = [c.strip() for c in df.columns]
+        # Optional very-light cleanup safe for bronze:
+        # df.columns = [str(c).strip() for c in df.columns]
 
         validate(df, CONTRACTS[sheet_name])
 
-        # HISTORY (immutable)
-        hist_dir = paths.local_dir(
-            "bronze", dataset_name, "HISTORY",
-            partitions=run.partitions, ensure=True
-        )
+        # HISTORY: immutable snapshot for this vendor and run (+ optional release)
+        hist_parts: dict[str, str] = {"vendor": vendor, **run.partitions}
+        if release:
+            hist_parts["release"] = release
+
+        hist_dir = paths.local_dir("bronze", dataset_name, "HISTORY", partitions=hist_parts, ensure=True)
         hist_file = write_dataset(df, hist_dir, basename="data")
 
-        # CURRENT (latest pointer)
-        curr_dir = paths.local_dir("bronze", dataset_name, "CURRENT", ensure=True)
+        # CURRENT: latest snapshot for this vendor (overwrites only vendor slice)
+        curr_dir = paths.local_dir("bronze", dataset_name, "CURRENT", partitions={"vendor": vendor}, ensure=True)
         curr_file = write_dataset(df, curr_dir, basename="data")
 
+        # Metrics
         run.metrics.update(
             {
+                f"{dataset_name}_sheet": sheet_name,
                 f"{dataset_name}_rows": int(len(df)),
                 f"{dataset_name}_cols": int(df.shape[1]),
                 f"{dataset_name}_bronze_history_dir": str(hist_dir),
