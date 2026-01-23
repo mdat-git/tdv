@@ -42,7 +42,6 @@ DEFAULT_SF_SCHEMA_GOLD = "GOLD"
 DEFAULT_SF_SCHEMA_UTIL = "UTIL"
 DEFAULT_SF_STAGE_BRONZE = "@TDINSPECTIONS_INFRA.BRONZE.BRONZE_STAGE"
 
-
 # ----------------------------
 # Tiny helpers
 # ----------------------------
@@ -64,23 +63,61 @@ def default_partitions(*, run_date: Optional[str] = None, run_id: Optional[str] 
     }
 
 
+# ----------------------------
+# Partition ordering (critical)
+# ----------------------------
+_PARTITION_PRIORITY = ["vendor", "run_date", "run_id"]
+
+
+def _ordered_partitions(partitions: Dict[str, str]) -> list[tuple[str, str]]:
+    """
+    Canonical partition order:
+      vendor -> run_date -> run_id -> (everything else alphabetical)
+    Drops empty/None values.
+    """
+    items: list[tuple[str, str]] = []
+
+    # priority first
+    for k in _PARTITION_PRIORITY:
+        if k in partitions and partitions[k] is not None:
+            v = str(partitions[k]).strip()
+            if v:
+                items.append((k, v))
+
+    # then remaining keys alphabetical (stable)
+    for k in sorted(partitions.keys()):
+        if k in _PARTITION_PRIORITY:
+            continue
+        v = partitions[k]
+        if v is not None:
+            v2 = str(v).strip()
+            if v2:
+                items.append((k, v2))
+
+    return items
+
+
 def _partitions_local(partitions: Optional[Dict[str, str]]) -> Path:
     """
-    Convert {"k":"v"} into Path("k=v/k2=v2") with stable ordering.
+    Builds: vendor=.../run_date=.../run_id=.../(...) in canonical order.
     """
     if not partitions:
         return Path()
-    parts = [f"{k}={partitions[k]}" for k in sorted(partitions.keys())]
-    return Path(*parts)
+
+    p = Path()
+    for k, v in _ordered_partitions(partitions):
+        p = p / f"{k}={v}"
+    return p
 
 
 def _partitions_stage(partitions: Optional[Dict[str, str]]) -> str:
     """
-    Convert {"k":"v"} into "k=v/k2=v2" with stable ordering.
+    Builds: vendor=.../run_date=.../run_id=.../(...) as a string prefix in canonical order.
+    Must match _partitions_local ordering.
     """
     if not partitions:
         return ""
-    return "/".join([f"{k}={partitions[k]}" for k in sorted(partitions.keys())])
+    return "/".join([f"{k}={v}" for k, v in _ordered_partitions(partitions)])
 
 
 # ----------------------------
@@ -199,7 +236,7 @@ def get_paths() -> Paths:
     uploads_root = Path(os.getenv(ENV_UPLOADS_ROOT) or DEFAULT_LOCAL_UPLOADS_ROOT)
 
     return Paths(
-        backend=backend,
+        backend=backend,  # type: ignore[arg-type]
         lakehouse_root=lakehouse_root,
         uploads_root=uploads_root,
         sf_database=os.getenv(ENV_SF_DATABASE, DEFAULT_SF_DATABASE),
