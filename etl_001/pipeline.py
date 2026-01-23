@@ -9,9 +9,8 @@ from inspections_lakehouse.util.paths import paths
 from inspections_lakehouse.util.run_logging import RunLog
 from inspections_lakehouse.util.validation import validate
 from inspections_lakehouse.util.dataset_io import write_dataset
+
 from inspections_lakehouse.etl.etl_001_scope_release_intake.delta import compute_key_delta
-
-
 from inspections_lakehouse.etl.etl_001_scope_release_intake.contract import CONTRACTS
 
 
@@ -62,15 +61,12 @@ def run_pipeline(run: RunLog, *, input_path: str, vendor: str, release: str | No
 
         validate(df, CONTRACTS[sheet_name])
 
-        # HISTORY: immutable snapshot for this vendor and run (+ optional release)
+        # 1) HISTORY: immutable snapshot for this vendor + run
         hist_parts: dict[str, str] = {"vendor": vendor, **run.partitions}
-
         hist_dir = paths.local_dir("bronze", dataset_name, "HISTORY", partitions=hist_parts, ensure=True)
         hist_file = write_dataset(df, hist_dir, basename="data")
 
-        # CURRENT: latest snapshot for this vendor (overwrites only vendor slice)
-        curr_dir = paths.local_dir("bronze", dataset_name, "CURRENT", partitions={"vendor": vendor}, ensure=True)
-        curr_file = write_dataset(df, curr_dir, basename="data")
+        # 2) DELTA: compare this run's HISTORY vs previous HISTORY (same vendor + dataset)
         delta_metrics, _ = compute_key_delta(
             dataset=dataset_name,
             vendor=vendor,
@@ -78,6 +74,9 @@ def run_pipeline(run: RunLog, *, input_path: str, vendor: str, release: str | No
         )
         run.metrics.update({f"{dataset_name}__{k}": v for k, v in delta_metrics.items()})
 
+        # 3) CURRENT: latest snapshot for this vendor (pointer-ish)
+        curr_dir = paths.local_dir("bronze", dataset_name, "CURRENT", partitions={"vendor": vendor}, ensure=True)
+        curr_file = write_dataset(df, curr_dir, basename="data")
 
         # Metrics
         run.metrics.update(
