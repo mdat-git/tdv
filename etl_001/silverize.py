@@ -277,6 +277,10 @@ def write_silver_line_and_header(
         if c in line_df.columns:
             line_df[c] = line_df[c].astype("string")
 
+    line_df = enforce_schema(line_df, EXPECTED_LINE_COLS, context=f"{dataset_name}:{vendor}")
+    run.metrics[f"{dataset_name}__schema_missing"] = line_df.attrs["schema_missing"]
+    run.metrics[f"{dataset_name}__schema_extra"] = line_df.attrs["schema_extra"]
+
     # Write LINE
     line_hist_dir = paths.local_dir(
         "silver",
