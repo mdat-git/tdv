@@ -9,6 +9,8 @@ from inspections_lakehouse.util.paths import paths
 from inspections_lakehouse.util.run_logging import RunLog
 from inspections_lakehouse.util.validation import validate
 from inspections_lakehouse.util.dataset_io import write_dataset
+from inspections_lakehouse.etl.etl_001_scope_release_intake.delta import compute_key_delta
+
 
 from inspections_lakehouse.etl.etl_001_scope_release_intake.contract import CONTRACTS
 
@@ -32,8 +34,6 @@ def run_pipeline(run: RunLog, *, input_path: str, vendor: str, release: str | No
 
     # --- Save exact artifact (as received) ---
     upload_parts: dict[str, str] = {"vendor": vendor, **run.partitions}
-    if release:
-        upload_parts["release"] = release
 
     uploads_dir = paths.uploads_dir("scope_release_intake", partitions=upload_parts, ensure=True)
     saved_src = uploads_dir / src.name
@@ -64,8 +64,6 @@ def run_pipeline(run: RunLog, *, input_path: str, vendor: str, release: str | No
 
         # HISTORY: immutable snapshot for this vendor and run (+ optional release)
         hist_parts: dict[str, str] = {"vendor": vendor, **run.partitions}
-        if release:
-            hist_parts["release"] = release
 
         hist_dir = paths.local_dir("bronze", dataset_name, "HISTORY", partitions=hist_parts, ensure=True)
         hist_file = write_dataset(df, hist_dir, basename="data")
@@ -73,6 +71,13 @@ def run_pipeline(run: RunLog, *, input_path: str, vendor: str, release: str | No
         # CURRENT: latest snapshot for this vendor (overwrites only vendor slice)
         curr_dir = paths.local_dir("bronze", dataset_name, "CURRENT", partitions={"vendor": vendor}, ensure=True)
         curr_file = write_dataset(df, curr_dir, basename="data")
+        delta_metrics, _ = compute_key_delta(
+            dataset=dataset_name,
+            vendor=vendor,
+            run_partitions=run.partitions,
+        )
+        run.metrics.update({f"{dataset_name}__{k}": v for k, v in delta_metrics.items()})
+
 
         # Metrics
         run.metrics.update(
