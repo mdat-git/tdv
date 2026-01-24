@@ -10,7 +10,6 @@ from inspections_lakehouse.util.paths import paths
 from inspections_lakehouse.util.run_logging import RunLog
 
 
-
 # ----------------------------
 # Regex for Transmission packages
 # ----------------------------
@@ -20,9 +19,7 @@ _SCOPE_PKG_RE = re.compile(r"^Scope Package\s*#\s*(\d+)\s*$", re.IGNORECASE)
 # ----------------------------
 # Tiny helpers
 # ----------------------------
-
 EXPECTED_LINE_COLS = [
-    "execution_bucket",
     "floc",
     "scope_id",
     "scope_removal_date",
@@ -36,6 +33,7 @@ EXPECTED_LINE_COLS = [
     "source_sheet",
 ]
 
+
 def enforce_schema(df: pd.DataFrame, expected: list[str], *, context: str) -> pd.DataFrame:
     missing = [c for c in expected if c not in df.columns]
     extra = [c for c in df.columns if c not in expected]
@@ -48,6 +46,7 @@ def enforce_schema(df: pd.DataFrame, expected: list[str], *, context: str) -> pd
     df2.attrs["schema_extra"] = extra
     df2.attrs["schema_context"] = context
     return df2
+
 
 def _strip_cols(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -105,21 +104,20 @@ def build_silver_line_distribution(
     source_file_saved: str,
 ) -> pd.DataFrame:
     """
-    Distribution:
-      EXECUTION_BUCKET, FLOC, SCOPE_REMOVAL_DATE, SCOPE_ID (blank => COMP)
-    Canonical output:
-      execution_bucket, floc, scope_id, scope_removal_date, is_active, scope_floc_key, + metadata
+    Distribution (canonical):
+      FLOC, SCOPE_REMOVAL_DATE, SCOPE_ID (blank => COMP)
+
+    Output:
+      floc, scope_id, scope_removal_date, is_active, visit_no, scope_floc_key, + metadata
     """
     df = _strip_cols(df_bronze)
 
-    c_bucket = _get_col(df, "EXECUTION_BUCKET")
     c_floc = _get_col(df, "FLOC")
     c_scope = _get_col(df, "SCOPE_ID")
     c_removed = _maybe_get_col(df, "SCOPE_REMOVAL_DATE")
 
     out = pd.DataFrame(index=df.index)
 
-    out["execution_bucket"] = _as_str(df[c_bucket])
     out["floc"] = _as_str(df[c_floc])
 
     scope = _as_str(df[c_scope]).replace({"": None, "nan": None, "NaT": None})
@@ -154,15 +152,16 @@ def build_silver_line_transmission(
 ) -> pd.DataFrame:
     """
     Transmission:
-      Scope_Bucket, FLOC, Date_Removed, Scope Package #N
+      FLOC, Date_Removed, Scope Package #N
+
     Transform:
       melt Scope Package #N -> scope_id (drop blanks)
-    Canonical output:
-      execution_bucket, floc, scope_id, scope_removal_date, is_active, visit_no, scope_floc_key, + metadata
+
+    Output:
+      floc, scope_id, scope_removal_date, is_active, visit_no, scope_floc_key, + metadata
     """
     df = _strip_cols(df_bronze)
 
-    c_bucket = _get_col(df, "Scope_Bucket")
     c_floc = _get_col(df, "FLOC")
     c_removed = _maybe_get_col(df, "Date_Removed")
 
@@ -186,7 +185,6 @@ def build_silver_line_transmission(
 
     out = pd.DataFrame(index=melted.index)
 
-    out["execution_bucket"] = _as_str(melted[c_bucket])
     out["floc"] = _as_str(melted[c_floc])
     out["scope_id"] = _as_str(melted["scope_id"])
 
@@ -204,7 +202,7 @@ def build_silver_line_transmission(
         .astype("Int64")
     )
 
-    # You decided key does NOT include visit_no (scope_id is unique). Keep visit_no anyway.
+    # Key does NOT include visit_no (scope_id is unique). Keep visit_no anyway.
     out["scope_floc_key"] = out["scope_id"] + "|" + out["floc"]
 
     # metadata
@@ -272,8 +270,8 @@ def write_silver_line_and_header(
     else:
         raise ValueError(f"Unknown sheet_name '{sheet_name}' (expected Distribution/Transmission).")
 
-    # Parquet safety: force these to strings if they exist
-    for c in ["execution_bucket", "floc", "scope_id", "scope_floc_key", "vendor"]:
+    # Parquet safety: force key string cols
+    for c in ["floc", "scope_id", "scope_floc_key", "vendor"]:
         if c in line_df.columns:
             line_df[c] = line_df[c].astype("string")
 
