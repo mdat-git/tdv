@@ -190,13 +190,12 @@ def build_events_transmission_removal(
     return out
 
 
-def build_events_move_to_helo(
+def build_events_move_to_helo_distribution(
     df_raw: pd.DataFrame,
     *,
     vendor: str,
     run: RunLog,
     source_file_saved: str,
-    sheet_name: str,
 ) -> pd.DataFrame:
     df = _strip_cols(df_raw)
 
@@ -210,24 +209,80 @@ def build_events_move_to_helo(
     out["scope_id"] = scope.fillna("COMP")
 
     out["event_type"] = "move_to_helo"
-    # per your requirement: effective as-of ingestion
     out["event_effective_date"] = pd.to_datetime(run.partitions["run_date"], errors="coerce")
-
     out["visit_no"] = pd.Series([pd.NA] * len(out), index=out.index, dtype="Int64")
+
     out["scope_floc_key"] = out["scope_id"].astype("string") + "|" + out["floc"].astype("string")
 
     out["vendor"] = vendor
     out["run_date"] = run.partitions["run_date"]
     out["run_id"] = run.partitions["run_id"]
     out["source_file_saved"] = source_file_saved
-    out["source_sheet"] = sheet_name
+    out["source_sheet"] = "Distribution"
 
     out = out[
         out["floc"].notna() & (out["floc"] != "")
         & out["scope_id"].notna() & (out["scope_id"] != "")
     ].copy()
-
     return out
+
+
+def build_events_move_to_helo_transmission(
+    df_raw: pd.DataFrame,
+    *,
+    vendor: str,
+    run: RunLog,
+    source_file_saved: str,
+) -> pd.DataFrame:
+    df = _strip_cols(df_raw)
+
+    c_floc = _get_col_any(df, ["FLOC"])
+
+    pkg_hits = _find_scope_package_cols(df)
+    if not pkg_hits:
+        raise ValueError("Transmission move_to_helo: no 'Scope Package #N' columns found.")
+
+    pkg_cols = [c for _, c in pkg_hits]
+    id_cols = [c for c in df.columns if c not in pkg_cols]
+
+    melted = df.melt(
+        id_vars=id_cols,
+        value_vars=pkg_cols,
+        var_name="scope_package_slot",
+        value_name="scope_id",
+    )
+
+    melted["scope_id"] = _as_str(melted["scope_id"])
+    melted = melted[melted["scope_id"].notna() & (melted["scope_id"] != "")].copy()
+
+    out = pd.DataFrame(index=melted.index)
+    out["floc"] = _as_str(melted[c_floc])
+    out["scope_id"] = _as_str(melted["scope_id"])
+
+    out["event_type"] = "move_to_helo"
+    out["event_effective_date"] = pd.to_datetime(run.partitions["run_date"], errors="coerce")
+
+    out["visit_no"] = (
+        melted["scope_package_slot"]
+        .astype("string")
+        .str.extract(_SCOPE_PKG_RE, expand=False)
+        .astype("Int64")
+    )
+
+    out["scope_floc_key"] = out["scope_id"].astype("string") + "|" + out["floc"].astype("string")
+
+    out["vendor"] = vendor
+    out["run_date"] = run.partitions["run_date"]
+    out["run_id"] = run.partitions["run_id"]
+    out["source_file_saved"] = source_file_saved
+    out["source_sheet"] = "Transmission"
+
+    out = out[
+        out["floc"].notna() & (out["floc"] != "")
+        & out["scope_id"].notna() & (out["scope_id"] != "")
+    ].copy()
+    return out
+
 
 
 # ----------------------------
