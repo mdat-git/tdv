@@ -104,10 +104,16 @@ def run_pipeline(run: RunLog, *, input_path: str, vendor: str, event_type: str) 
                 ev = build_events_distribution_removal(df, vendor=vendor, run=run, source_file_saved=str(saved_src))
             else:
                 ev = build_events_transmission_removal(df, vendor=vendor, run=run, source_file_saved=str(saved_src))
-        else:
-            ev = build_events_move_to_helo(
-                df, vendor=vendor, run=run, source_file_saved=str(saved_src), sheet_name=sheet_name
-            )
+        else:  # move_to_helo
+            if sheet_name == "Distribution":
+                ev = build_events_move_to_helo_distribution(
+                    df, vendor=vendor, run=run, source_file_saved=str(saved_src)
+                )
+            else:  # Transmission
+                ev = build_events_move_to_helo_transmission(
+                    df, vendor=vendor, run=run, source_file_saved=str(saved_src)
+                )
+
 
         all_events.append(ev)
 
