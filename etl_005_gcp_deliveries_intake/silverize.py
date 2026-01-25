@@ -18,13 +18,51 @@ def _parse_mm_dd_yyyy(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s, format="%m-%d-%Y", errors="coerce").dt.date
 
 
-def _parse_folder(folder: pd.Series) -> pd.DataFrame:
-    first_token = folder.astype(str).str.split("_", n=1).str[0]
-    scope_id = first_token.str.split("-", n=1).str[0]
-    block_id = first_token.str.split("-", n=1).str[1]
-    yyyymmdd = folder.astype(str).str.rsplit("_", n=1).str[-1]
-    folder_date = pd.to_datetime(yyyymmdd, format="%Y%m%d", errors="coerce").dt.date
-    return pd.DataFrame({"scope_id": scope_id, "block_id": block_id, "folder_date": folder_date})
+def _parse_folder_vendor_aware(folder: pd.Series, vendor: pd.Series) -> pd.DataFrame:
+    """
+    Default folder format (validated by GCP):
+      (SCOPE_ID)-(BLOCK_ID)_Assets_YYYYMMDD
+
+    Special-case vendor "SCE ESI":
+      folder is arbitrary like nn-(FLOC_ID), so we do NOT parse.
+      scope_id = "ESI"
+      block_id = <NA>
+      folder_date = <NA>
+    """
+    folder_s = folder.astype(str)
+    vendor_s = vendor.astype(str)
+
+    # Allocate outputs
+    scope_id = pd.Series(pd.NA, index=folder.index, dtype="string")
+    block_id = pd.Series(pd.NA, index=folder.index, dtype="string")
+    folder_date = pd.Series(pd.NA, index=folder.index, dtype="object")  # date objects or <NA>
+
+    is_esi = vendor_s.eq("SCE ESI")
+
+    # --- Special vendor: SCE ESI ---
+    scope_id.loc[is_esi] = "ESI"
+    # block_id and folder_date remain NA
+
+    # --- Normal vendors ---
+    normal = ~is_esi
+
+    # first token: "(SCOPE_ID)-(BLOCK_ID)"
+    first_token = folder_s.loc[normal].str.split("_", n=1).str[0]
+    scope_id.loc[normal] = first_token.str.split("-", n=1).str[0].astype("string")
+    block_id.loc[normal] = first_token.str.split("-", n=1).str[1].astype("string")
+
+    # suffix date after last "_" is "YYYYMMDD" (guaranteed for normal vendors)
+    yyyymmdd = folder_s.loc[normal].str.rsplit("_", n=1).str[-1]
+    folder_date.loc[normal] = pd.to_datetime(yyyymmdd, format="%Y%m%d", errors="coerce").dt.date
+
+    return pd.DataFrame(
+        {
+            "scope_id": scope_id,
+            "block_id": block_id,
+            "folder_date": folder_date,
+        }
+    )
+
 
 
 def _dedupe_latest(df: pd.DataFrame) -> pd.DataFrame:
@@ -63,10 +101,12 @@ def build_silver_evidence(
     df["folder"] = df["folder"].astype(str)
     df["image_count"] = pd.to_numeric(df["imageCount"], errors="coerce").fillna(0).astype(int)
 
-    parsed = _parse_folder(df["folder"])
-    df["scope_id"] = parsed["scope_id"].astype(str)
-    df["block_id"] = parsed["block_id"].astype(str)
-    df["folder_date"] = parsed["folder_date"]
+    parsed = _parse_folder_vendor_aware(df["folder"], df["vendor"])
+
+    # Keep as nullable types (don't force 'nan' strings)
+    df["scope_id"] = parsed["scope_id"].astype("string")
+    df["block_id"] = parsed["block_id"].astype("string")
+    df["folder_date"] = parsed["folder_date"]  # date or <NA>
 
     df["scope_floc_key"] = df["scope_id"].astype(str) + "|" + df["floc"].astype(str)
     df["has_deliveries_evidence"] = df["image_count"] > 0
