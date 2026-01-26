@@ -14,7 +14,10 @@ from inspections_lakehouse.etl.etl_007_invoice_eligibility_builder.eligibility_r
     compute_distribution_eligibility,
     compute_transmission_eligibility,
     build_scope_summary,
+    build_unmatched_gcp,
+    build_unmatched_azure,
 )
+
 
 PIPELINE = "etl_007_invoice_eligibility_builder"
 
@@ -26,6 +29,11 @@ SILVER_GCP_DIST = "deliveries_evidence_gcp_distribution_line"
 SILVER_GCP_TRANS = "deliveries_evidence_gcp_transmission_line"
 
 SILVER_AZ_DIST_FLOC = "inspections_evidence_azure_distribution_floc"
+
+GOLD_UNMATCHED_GCP_DIST = "evidence_unmatched_gcp_distribution_line"
+GOLD_UNMATCHED_GCP_TRANS = "evidence_unmatched_gcp_transmission_line"
+GOLD_UNMATCHED_AZ_DIST = "evidence_unmatched_azure_distribution_floc"
+
 
 # Outputs
 GOLD_OUT_LINE = "invoice_eligibility_line"
