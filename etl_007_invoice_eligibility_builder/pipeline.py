@@ -129,6 +129,37 @@ def run_pipeline(*, run, min_images: int = 8, source_system: str = "INTERNAL") -
         source_system=source_system,
     )
 
+    # ----------------------------
+    # Forensics: evidence that DID NOT merge to assignments
+    # ----------------------------
+    unmatched_gcp_dist = build_unmatched_gcp(
+        assignments=df_scope_dist,
+        deliveries_agg=deliveries_dist,
+        asset_class="distribution",
+        run=run,
+        source_system=source_system,
+    )
+    unmatched_gcp_trans = build_unmatched_gcp(
+        assignments=df_scope_trans,
+        deliveries_agg=deliveries_trans,
+        asset_class="transmission",
+        run=run,
+        source_system=source_system,
+    )
+    unmatched_az_dist = build_unmatched_azure(
+        assignments_dist=df_scope_dist,
+        azure_floc=az_floc,
+        run=run,
+        source_system=source_system,
+    )
+
+    metrics["unmatched"] = {
+        "unmatched_gcp_dist_rows": int(len(unmatched_gcp_dist)),
+        "unmatched_gcp_trans_rows": int(len(unmatched_gcp_trans)),
+        "unmatched_az_dist_rows": int(len(unmatched_az_dist)),
+    }
+
+
     # Unified line table
     out_line = pd.concat([out_dist, out_trans], ignore_index=True, sort=False)
     metrics["out_line_rows"] = int(len(out_line))
@@ -136,6 +167,18 @@ def run_pipeline(*, run, min_images: int = 8, source_system: str = "INTERNAL") -
     # Scope summary (vendor + scope_id)
     out_summary = build_scope_summary(out_line, run=run, source_system=source_system)
     metrics["out_summary_rows"] = int(len(out_summary))
+
+    # metrics for unmatched stuff
+    metrics["write_unmatched_gcp_dist"] = _write_whole_table(
+        unmatched_gcp_dist, layer="gold", dataset=GOLD_UNMATCHED_GCP_DIST, run=run
+    )
+    metrics["write_unmatched_gcp_trans"] = _write_whole_table(
+        unmatched_gcp_trans, layer="gold", dataset=GOLD_UNMATCHED_GCP_TRANS, run=run
+    )
+    metrics["write_unmatched_az_dist"] = _write_whole_table(
+        unmatched_az_dist, layer="gold", dataset=GOLD_UNMATCHED_AZ_DIST, run=run
+    )
+
 
     # ----------------------------
     # Write outputs
