@@ -300,6 +300,115 @@ def compute_transmission_eligibility(
     keep = [c for c in keep if c in df.columns]
     return df[keep].reset_index(drop=True)
 
+# --- Add to: src/inspections_lakehouse/etl/etl_007_invoice_eligibility_builder/eligibility_rules.py
+
+def build_unmatched_gcp(
+    *,
+    assignments: pd.DataFrame,
+    deliveries_agg: pd.DataFrame,
+    asset_class: str,
+    run,
+    source_system: str,
+) -> pd.DataFrame:
+    """
+    Left anti-join:
+      deliveries_agg (vendor+scope_floc_key) NOT FOUND in assignments (vendor+scope_floc_key)
+    """
+    a = assignments.copy()
+    d = deliveries_agg.copy()
+
+    for c in ["vendor", "scope_floc_key", "scope_id", "floc"]:
+        if c in a.columns:
+            a[c] = a[c].astype("string").str.strip()
+        if c in d.columns:
+            d[c] = d[c].astype("string").str.strip()
+
+    a_keys = a[["vendor", "scope_floc_key"]].drop_duplicates()
+
+    merged = d.merge(a_keys, on=["vendor", "scope_floc_key"], how="left", indicator=True)
+    out = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"]).copy()
+
+    out.insert(0, "asset_class", asset_class)
+
+    # Helpful normalization for dashboards
+    if "floc_any" in out.columns and "floc" not in out.columns:
+        out = out.rename(columns={"floc_any": "floc"})
+    if "scope_id_any" in out.columns and "scope_id" not in out.columns:
+        out = out.rename(columns={"scope_id_any": "scope_id"})
+
+    out["unmatched_reason"] = "VENDOR_SCOPE_KEY_NOT_IN_ASSIGNMENTS"
+    out["eligibility_run_date"] = run.run_date
+    out["eligibility_run_id"] = run.run_id
+    out["eligibility_source_system"] = source_system
+
+    # Optional: stable column order
+    preferred = [
+        "asset_class",
+        "vendor",
+        "scope_id",
+        "floc",
+        "scope_floc_key",
+        "image_count_total",
+        "folder_count",
+        "has_gcp_delivery",
+        "has_min_images",
+        "unmatched_reason",
+        "eligibility_run_date",
+        "eligibility_run_id",
+        "eligibility_source_system",
+    ]
+    cols = [c for c in preferred if c in out.columns] + [c for c in out.columns if c not in preferred]
+    return out[cols].reset_index(drop=True)
+
+
+def build_unmatched_azure(
+    *,
+    assignments_dist: pd.DataFrame,
+    azure_floc: pd.DataFrame,
+    run,
+    source_system: str,
+) -> pd.DataFrame:
+    """
+    Left anti-join:
+      azure_floc (floc) NOT FOUND in distribution assignments (floc)
+    (Distribution-only because Azure evidence is dist-only in your current design.)
+    """
+    a = assignments_dist.copy()
+    z = azure_floc.copy()
+
+    a["floc"] = a["floc"].astype("string").str.strip()
+    z["floc"] = z["floc"].astype("string").str.strip()
+
+    a_flocs = a[["floc"]].drop_duplicates()
+
+    merged = z.merge(a_flocs, on=["floc"], how="left", indicator=True)
+    out = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"]).copy()
+
+    out.insert(0, "asset_class", "distribution")
+    out["unmatched_reason"] = "FLOC_NOT_IN_DISTRIBUTION_ASSIGNMENTS"
+    out["eligibility_run_date"] = run.run_date
+    out["eligibility_run_id"] = run.run_id
+    out["eligibility_source_system"] = source_system
+
+    preferred = [
+        "asset_class",
+        "floc",
+        "has_any_mdoc",
+        "has_ground_mdoc",
+        "has_aerial_mdoc",
+        "ground_measurement_documents",
+        "aerial_measurement_documents",
+        "created_at_max",
+        "row_count",
+        "object_type_count",
+        "unmatched_reason",
+        "eligibility_run_date",
+        "eligibility_run_id",
+        "eligibility_source_system",
+    ]
+    cols = [c for c in preferred if c in out.columns] + [c for c in out.columns if c not in preferred]
+    return out[cols].reset_index(drop=True)
+
 
 def build_scope_summary(df_line: pd.DataFrame, *, run, source_system: str) -> pd.DataFrame:
     """
