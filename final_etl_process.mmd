@@ -1,0 +1,211 @@
+flowchart LR
+  %% =========================
+  %% Styles
+  %% =========================
+  classDef bronze fill:#b87333,stroke:#5a3318,color:#fff,stroke-width:1px;
+  classDef silver fill:#c0c0c0,stroke:#555,color:#111,stroke-width:1px;
+  classDef gold fill:#d4af37,stroke:#6b5b1a,color:#111,stroke-width:1px;
+  classDef ext fill:#1f6feb,stroke:#0b2f5b,color:#fff,stroke-width:1px;
+  classDef etl fill:#111827,stroke:#374151,color:#fff,stroke-width:1px;
+
+  %% =========================
+  %% External inputs
+  %% =========================
+  RLS["Vendor Drone Scope Release XLSX<br>(Distribution/Transmission)"]:::ext
+  HELOX["HELO Scope Tracker XLSX<br>(Distribution/Transmission)"]:::ext
+  EVT["Scope Events XLSX<br>(Removal / Move-to-HELO)<br>(Distribution/Transmission)"]:::ext
+
+  GCP["Deliveries Evidence Extract (GCP)<br>(Distribution XLSX + Transmission XLSX)<br>(vendor/floc/scope in folder)"]:::ext
+  AZ["Azure InspectApp Surveys Export (CSV via Dataflow→Report→PA)<br>(Distribution only)<br>(floc + mdoc evidence)"]:::ext
+
+  OFFSCOPE["Official Year Scope Spreadsheets (Mgmt)<br>1) Transmission HF<br>2) Distribution HF<br>3) Distribution Non-HF<br>(FLOC, Eq_OjType)"]:::ext
+
+  PBI["Power BI Dashboards"]:::ext
+  VSP["Vendor SharePoint Export (optional)"]:::ext
+
+  %% =========================
+  %% ETLs (Implemented)
+  %% =========================
+  ETL1["ETL-001: Drone Scope Release Intake<br>Bronze copy + Silver canonical<br>(dist/trans)"]:::etl
+  ETL2["ETL-002: Scope Events Intake<br>(removal / move_to_helo)<br>Bronze copy + Silver canonical"]:::etl
+  ETL3["ETL-003: HELO Scope Intake<br>Bronze copy + Silver canonical<br>(dist/trans)"]:::etl
+  ETL4["ETL-004: GOLD Scope Assignment Current<br>Union vendors + apply event overrides<br>(dist/trans)"]:::etl
+
+  %% =========================
+  %% Bronze (Implemented)
+  %% =========================
+  B1["BRONZE.scope_release_distribution<br>HISTORY + CURRENT<br>partition: vendor + run_date + run_id"]:::bronze
+  B2["BRONZE.scope_release_transmission<br>HISTORY + CURRENT<br>partition: vendor + run_date + run_id"]:::bronze
+
+  B3["BRONZE.scope_events<br>HISTORY + CURRENT<br>partition: vendor + event_type + run_date + run_id"]:::bronze
+
+  B4["BRONZE.helo_scope_distribution<br>HISTORY + CURRENT<br>partition: vendor + run_date + run_id"]:::bronze
+  B5["BRONZE.helo_scope_transmission<br>HISTORY + CURRENT<br>partition: vendor + run_date + run_id"]:::bronze
+
+  %% =========================
+  %% Silver (Implemented)
+  %% =========================
+  S1["SILVER.scope_release_distribution_line<br>HISTORY + CURRENT<br>canonical: floc, scope_id, scope_removal_date, is_active, scope_floc_key, ..."]:::silver
+  S2["SILVER.scope_release_distribution_header<br>HISTORY + CURRENT"]:::silver
+
+  S3["SILVER.scope_release_transmission_line<br>HISTORY + CURRENT<br>canonical: floc, scope_id, scope_removal_date, is_active, visit_no, scope_floc_key, ..."]:::silver
+  S4["SILVER.scope_release_transmission_header<br>HISTORY + CURRENT"]:::silver
+
+  S5["SILVER.scope_events_line<br>HISTORY + CURRENT<br>canonical: event_type, event_effective_date, floc, scope_id, visit_no, scope_floc_key, ..."]:::silver
+  S6["SILVER.scope_events_header<br>HISTORY + CURRENT"]:::silver
+
+  S7["SILVER.helo_scope_distribution_line<br>HISTORY + CURRENT<br>canonical: floc, scope_id, scope_floc_key, ..."]:::silver
+  S8["SILVER.helo_scope_distribution_header<br>HISTORY + CURRENT"]:::silver
+
+  S9["SILVER.helo_scope_transmission_line<br>HISTORY + CURRENT<br>canonical: floc, scope_id, visit_no, scope_floc_key, ..."]:::silver
+  S10["SILVER.helo_scope_transmission_header<br>HISTORY + CURRENT"]:::silver
+
+  SD1["SILVER.scope_release_*_delta<br>(optional forensic)<br>added/removed/updated"]:::silver
+
+  %% =========================
+  %% Gold (Implemented)
+  %% =========================
+  G1["GOLD.scope_assignment_current_distribution<br>CURRENT + HISTORY<br>fields: assignment_method, is_active_assignment, assignment_status,<br>latest_event_type/date, lineage"]:::gold
+
+  G2["GOLD.scope_assignment_current_transmission<br>CURRENT + HISTORY<br>same fields as distribution"]:::gold
+
+  %% =========================
+  %% Evidence + Eligibility (Current)
+  %% =========================
+  ETL5["ETL-005: GCP Deliveries Evidence Intake<br>(dist + trans files)<br>Bronze snapshot + Silver canonical"]:::etl
+  ETL6["ETL-006: Azure InspectApp Surveys Intake<br>(distribution only)<br>Bronze snapshot + Silver line + Silver FLOC rollup"]:::etl
+  ETL7["ETL-007: Invoice Eligibility Builder<br>Join GOLD scope_assignment_current + evidence + object_type<br>Compute approved_to_invoice + review flags"]:::etl
+  ETL8["ETL-008: Official Year Scope Master Intake<br>(3 mgmt spreadsheets)<br>Bronze snapshot + Silver canonical + FLOC object_type dim"]:::etl
+  ETL9["ETL-009 (Optional): Vendor Export Publisher<br>Write approved items + summaries to SharePoint"]:::etl
+
+  %% -------------------------
+  %% Bronze (Evidence)
+  %% -------------------------
+  B6["BRONZE.gcp_deliveries_extract_distribution<br>HISTORY + CURRENT<br>partition: run_date + run_id (whole table)"]:::bronze
+  B6b["BRONZE.gcp_deliveries_extract_transmission<br>HISTORY + CURRENT<br>partition: run_date + run_id (whole table)"]:::bronze
+
+  B7["BRONZE.azure_inspectapp_surveys_extract_distribution<br>HISTORY + CURRENT<br>partition: run_date + run_id (whole table)"]:::bronze
+
+  %% -------------------------
+  %% Silver (Evidence)
+  %% -------------------------
+  S11["SILVER.deliveries_evidence_gcp_distribution_line<br>HISTORY + CURRENT (whole table)<br>grain: vendor + scope_floc_key<br>fields: scope_id, floc, folder, image_count, dates..."]:::silver
+
+  S11b["SILVER.deliveries_evidence_gcp_transmission_line<br>HISTORY + CURRENT (whole table)<br>grain: vendor + scope_floc_key<br>fields: scope_id, floc, folder, image_count, dates..."]:::silver
+
+  S12L["SILVER.inspections_evidence_azure_distribution_line<br>HISTORY + CURRENT (whole table)<br>record grain (dupes per floc)<br>fields: floc, created_at, object_type, inspection_status, mdoc..."]:::silver
+
+  S12F["SILVER.inspections_evidence_azure_distribution_floc<br>HISTORY + CURRENT (whole table)<br>grain: floc (unsafe join for now)<br>has_any_mdoc + joined docs + latest activity"]:::silver
+
+  %% -------------------------
+  %% Bronze/Silver (Official Scope Master)
+  %% -------------------------
+  B8a["BRONZE.official_scope_transmission_high_fire_raw<br>HISTORY + CURRENT<br>partition: run_date + run_id (whole table)"]:::bronze
+  B8b["BRONZE.official_scope_distribution_high_fire_raw<br>HISTORY + CURRENT<br>partition: run_date + run_id (whole table)"]:::bronze
+  B8c["BRONZE.official_scope_distribution_non_high_fire_raw<br>HISTORY + CURRENT<br>partition: run_date + run_id (whole table)"]:::bronze
+
+  S13a["SILVER.official_scope_transmission_high_fire_line<br>HISTORY + CURRENT<br>cols: floc, object_type, asset_class, scope_list, lineage..."]:::silver
+  S13b["SILVER.official_scope_distribution_high_fire_line<br>HISTORY + CURRENT<br>cols: floc, object_type, asset_class, scope_list, lineage..."]:::silver
+  S13c["SILVER.official_scope_distribution_non_high_fire_line<br>HISTORY + CURRENT<br>cols: floc, object_type, asset_class, scope_list, lineage..."]:::silver
+
+  SDIM["SILVER.floc_object_type_dim<br>HISTORY + CURRENT<br>grain: floc<br>object_type (ED/ET/EZ) + forensics"]:::silver
+
+  %% -------------------------
+  %% Gold (Eligibility)
+  %% -------------------------
+  G3["GOLD.invoice_eligibility_line<br>grain: vendor + scope_floc_key (+ asset_class)<br>approved_to_invoice, reasons, evidence flags, object_type"]:::gold
+  G4["GOLD.invoice_eligibility_scope_summary<br>grain: vendor + scope_id<br>counts approved/blocked"]:::gold
+
+  UG1["GOLD.evidence_unmatched_gcp_distribution_line<br>deliveries agg not found in dist assignments"]:::gold
+  UG2["GOLD.evidence_unmatched_gcp_transmission_line<br>deliveries agg not found in trans assignments"]:::gold
+  UA1["GOLD.evidence_unmatched_azure_distribution_floc<br>azure flocs not found in dist assignments"]:::gold
+
+  %% =========================
+  %% Implemented flows
+  %% =========================
+  RLS --> ETL1
+  ETL1 --> B1
+  ETL1 --> B2
+  B1 --> S1
+  B2 --> S3
+  S1 --> SD1
+  S3 --> SD1
+  S1 --> S2
+  S3 --> S4
+
+  EVT --> ETL2
+  ETL2 --> B3
+  B3 --> S5
+  S5 --> S6
+
+  HELOX --> ETL3
+  ETL3 --> B4
+  ETL3 --> B5
+  B4 --> S7
+  B5 --> S9
+  S7 --> S8
+  S9 --> S10
+
+  S1 --> ETL4
+  S3 --> ETL4
+  S7 --> ETL4
+  S9 --> ETL4
+  S5 --> ETL4
+  ETL4 --> G1
+  ETL4 --> G2
+
+  %% =========================
+  %% Evidence ingestion flows
+  %% =========================
+  GCP --> ETL5
+  ETL5 --> B6
+  ETL5 --> B6b
+  B6 --> S11
+  B6b --> S11b
+
+  AZ --> ETL6
+  ETL6 --> B7
+  B7 --> S12L
+  S12L --> S12F
+
+  %% =========================
+  %% Official scope master flows (new)
+  %% =========================
+  OFFSCOPE --> ETL8
+  ETL8 --> B8a
+  ETL8 --> B8b
+  ETL8 --> B8c
+  B8a --> S13a
+  B8b --> S13b
+  B8c --> S13c
+  S13a --> SDIM
+  S13b --> SDIM
+  S13c --> SDIM
+
+  %% =========================
+  %% Eligibility builder joins (updated)
+  %% =========================
+  G1 --> ETL7
+  G2 --> ETL7
+  S11 --> ETL7
+  S11b --> ETL7
+  S12F --> ETL7
+  SDIM --> ETL7
+  ETL7 --> G3
+  ETL7 --> G4
+  ETL7 --> UG1
+  ETL7 --> UG2
+  ETL7 --> UA1
+
+  %% =========================
+  %% Consumption + Publishing (Optional)
+  %% =========================
+  G3 --> PBI
+  G4 --> PBI
+  UG1 --> PBI
+  UG2 --> PBI
+  UA1 --> PBI
+
+  G3 --> ETL9
+  G4 --> ETL9
+  ETL9 --> VSP
