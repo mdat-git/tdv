@@ -1,8 +1,7 @@
-# src/inspections_lakehouse/etl/etl_007_invoice_eligibility_builder/pipeline.py
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import pandas as pd
 
@@ -18,10 +17,9 @@ from inspections_lakehouse.etl.etl_007_invoice_eligibility_builder.eligibility_r
     build_unmatched_azure,
 )
 
-
 PIPELINE = "etl_007_invoice_eligibility_builder"
 
-# Inputs (per your confirmed names)
+# Inputs
 GOLD_SCOPE_DIST = "scope_assignment_current_distribution"
 GOLD_SCOPE_TRANS = "scope_assignment_current_transmission"
 
@@ -30,10 +28,13 @@ SILVER_GCP_TRANS = "deliveries_evidence_gcp_transmission_line"
 
 SILVER_AZ_DIST_FLOC = "inspections_evidence_azure_distribution_floc"
 
+# NEW: authoritative dim from ETL008
+SILVER_FLOC_ATTR_DIM = "floc_attributes_dim"
+
+# Forensics outputs
 GOLD_UNMATCHED_GCP_DIST = "evidence_unmatched_gcp_distribution_line"
 GOLD_UNMATCHED_GCP_TRANS = "evidence_unmatched_gcp_transmission_line"
 GOLD_UNMATCHED_AZ_DIST = "evidence_unmatched_azure_distribution_floc"
-
 
 # Outputs
 GOLD_OUT_LINE = "invoice_eligibility_line"
@@ -41,9 +42,6 @@ GOLD_OUT_SUMMARY = "invoice_eligibility_scope_summary"
 
 
 def _read_dataset_dir(dataset_dir: Path) -> pd.DataFrame:
-    """
-    Reads the dataset written by write_dataset(): prefer data.parquet else data.csv.
-    """
     pq = dataset_dir / "data.parquet"
     csv = dataset_dir / "data.csv"
     if pq.exists():
@@ -74,6 +72,45 @@ def _write_whole_table(df: pd.DataFrame, *, layer: Layer, dataset: str, run) -> 
     return {"rows": int(len(df)), "cols": list(df.columns)}
 
 
+def _standardize_floc_attributes_dim(df_dim: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expect at least: floc, object_type (voltage optional).
+    Keep one row per floc deterministically.
+    """
+    df = df_dim.copy()
+
+    if "floc" not in df.columns:
+        raise ValueError("floc_attributes_dim missing required column: floc")
+    if "object_type" not in df.columns:
+        raise ValueError("floc_attributes_dim missing required column: object_type")
+
+    df["floc"] = df["floc"].astype("string").str.strip()
+    df["object_type"] = df["object_type"].astype("string").str.strip()
+    if "voltage" in df.columns:
+        df["voltage"] = df["voltage"].astype("string").str.strip()
+        df.loc[df["voltage"] == "", "voltage"] = pd.NA
+    else:
+        df["voltage"] = pd.NA
+
+    # rank object types so duplicates resolve deterministically
+    def rank_obj(x: Optional[str]) -> int:
+        if x == "EZ_POLE":
+            return 4
+        if x == "ET_TOWER":
+            return 3
+        if x == "ET_POLE":
+            return 2
+        if x == "ED_POLE":
+            return 1
+        return 0
+
+    df["_rank"] = df["object_type"].map(rank_obj)
+    df = df.sort_values(["floc", "_rank"], ascending=[True, False])
+    df = df.drop_duplicates(subset=["floc"], keep="first").drop(columns=["_rank"])
+
+    return df[["floc", "object_type", "voltage"]]
+
+
 def run_pipeline(*, run, min_images: int = 8, source_system: str = "INTERNAL") -> Dict[str, Any]:
     metrics: Dict[str, Any] = {}
 
@@ -88,12 +125,36 @@ def run_pipeline(*, run, min_images: int = 8, source_system: str = "INTERNAL") -
 
     df_az_floc = _read_current("silver", SILVER_AZ_DIST_FLOC)
 
+    # NEW: floc attributes dim
+    df_floc_dim = _read_current("silver", SILVER_FLOC_ATTR_DIM)
+    df_floc_dim = _standardize_floc_attributes_dim(df_floc_dim)
+
     metrics["inputs"] = {
         "scope_dist_rows": int(len(df_scope_dist)),
         "scope_trans_rows": int(len(df_scope_trans)),
         "gcp_dist_rows": int(len(df_gcp_dist)),
         "gcp_trans_rows": int(len(df_gcp_trans)),
         "az_floc_rows": int(len(df_az_floc)),
+        "floc_attr_dim_rows": int(len(df_floc_dim)),
+    }
+
+    # ----------------------------
+    # Merge floc attributes onto scope assignments (no logic changes yet)
+    # ----------------------------
+    if "floc" in df_scope_dist.columns:
+        df_scope_dist["floc"] = df_scope_dist["floc"].astype("string").str.strip()
+    if "floc" in df_scope_trans.columns:
+        df_scope_trans["floc"] = df_scope_trans["floc"].astype("string").str.strip()
+
+    df_scope_dist = df_scope_dist.merge(df_floc_dim, on="floc", how="left")
+    df_scope_trans = df_scope_trans.merge(df_floc_dim, on="floc", how="left")
+
+    metrics["floc_attr_merge"] = {
+        "dist_object_type_nulls": int(df_scope_dist["object_type"].isna().sum()) if "object_type" in df_scope_dist.columns else None,
+        "trans_object_type_nulls": int(df_scope_trans["object_type"].isna().sum()) if "object_type" in df_scope_trans.columns else None,
+        "dist_voltage_nulls": int(df_scope_dist["voltage"].isna().sum()) if "voltage" in df_scope_dist.columns else None,
+        "trans_voltage_nulls": int(df_scope_trans["voltage"].isna().sum()) if "voltage" in df_scope_trans.columns else None,
+        "note": "Joined floc_attributes_dim onto scope assignments (floc). No eligibility logic change yet.",
     }
 
     # ----------------------------
@@ -159,7 +220,6 @@ def run_pipeline(*, run, min_images: int = 8, source_system: str = "INTERNAL") -
         "unmatched_az_dist_rows": int(len(unmatched_az_dist)),
     }
 
-
     # Unified line table
     out_line = pd.concat([out_dist, out_trans], ignore_index=True, sort=False)
     metrics["out_line_rows"] = int(len(out_line))
@@ -168,7 +228,7 @@ def run_pipeline(*, run, min_images: int = 8, source_system: str = "INTERNAL") -
     out_summary = build_scope_summary(out_line, run=run, source_system=source_system)
     metrics["out_summary_rows"] = int(len(out_summary))
 
-    # metrics for unmatched stuff
+    # Write unmatched outputs
     metrics["write_unmatched_gcp_dist"] = _write_whole_table(
         unmatched_gcp_dist, layer="gold", dataset=GOLD_UNMATCHED_GCP_DIST, run=run
     )
@@ -179,10 +239,7 @@ def run_pipeline(*, run, min_images: int = 8, source_system: str = "INTERNAL") -
         unmatched_az_dist, layer="gold", dataset=GOLD_UNMATCHED_AZ_DIST, run=run
     )
 
-
-    # ----------------------------
-    # Write outputs
-    # ----------------------------
+    # Write main outputs
     metrics["write_line"] = _write_whole_table(out_line, layer="gold", dataset=GOLD_OUT_LINE, run=run)
     metrics["write_summary"] = _write_whole_table(out_summary, layer="gold", dataset=GOLD_OUT_SUMMARY, run=run)
 
