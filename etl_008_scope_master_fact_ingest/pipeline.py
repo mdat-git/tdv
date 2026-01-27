@@ -1,4 +1,3 @@
-# src/inspections_lakehouse/etl/etl_008_official_scope_master/pipeline.py
 from __future__ import annotations
 
 import shutil
@@ -7,11 +6,11 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from inspections_lakehouse.util.paths import paths
+from inspections_lakehouse.util.paths import paths, Layer
 from inspections_lakehouse.util.dataset_io import write_dataset
 from inspections_lakehouse.etl.etl_008_official_scope_master.silverize import (
     silverize_scope_table,
-    build_floc_object_type_dim,
+    build_floc_attributes_dim,
 )
 
 UPLOADS_CATEGORY = "official_scope"
@@ -21,19 +20,19 @@ BRONZE_TRANS_HF = "official_scope_transmission_high_fire_raw"
 BRONZE_DIST_HF = "official_scope_distribution_high_fire_raw"
 BRONZE_DIST_NHF = "official_scope_distribution_non_high_fire_raw"
 
-# Silver datasets (canonical)
+# Silver datasets (canonical slices)
 SILVER_TRANS_HF = "official_scope_transmission_high_fire_line"
 SILVER_DIST_HF = "official_scope_distribution_high_fire_line"
 SILVER_DIST_NHF = "official_scope_distribution_non_high_fire_line"
 
-# Consolidated dim (for ETL007 join)
-SILVER_FLOC_DIM = "floc_object_type_dim"
+# Silver master + dim
+SILVER_MASTER = "official_scope_master_line"
+SILVER_FLOC_ATTR_DIM = "floc_attributes_dim"
 
 
 def _read_xlsx(path: Path, *, sheet_name: Optional[str]) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Input XLSX not found: {path}")
-    # dtype=str keeps things stable; you can parse later if needed
     return pd.read_excel(path, sheet_name=(sheet_name if sheet_name else 0), dtype=str)
 
 
@@ -48,7 +47,7 @@ def _archive_input(xlsx_path: Path, run, *, label: str) -> str:
     return str(dest)
 
 
-def _write_whole_table(df: pd.DataFrame, *, layer: str, dataset: str, run) -> Dict[str, Any]:
+def _write_whole_table(df: pd.DataFrame, *, layer: Layer, dataset: str, run) -> Dict[str, Any]:
     out_hist = paths.local_dir(
         layer=layer,
         dataset=dataset,
@@ -105,7 +104,7 @@ def run_pipeline(
     }
 
     # ----------------------------
-    # Bronze (raw + minimal lineage)
+    # Bronze: raw + minimal lineage
     # ----------------------------
     def bronzeize(df: pd.DataFrame, saved: str, asset_class: str, scope_list: str) -> pd.DataFrame:
         out = df.copy()
@@ -126,7 +125,7 @@ def run_pipeline(
     metrics["write_bronze_dist_nhf"] = _write_whole_table(b_dist_nhf, layer="bronze", dataset=BRONZE_DIST_NHF, run=run)
 
     # ----------------------------
-    # Silver (canonical selection)
+    # Silver: canonical selection
     # ----------------------------
     s_trans = silverize_scope_table(
         b_trans,
@@ -158,15 +157,19 @@ def run_pipeline(
     metrics["write_silver_dist_nhf"] = _write_whole_table(s_dist_nhf, layer="silver", dataset=SILVER_DIST_NHF, run=run)
 
     # ----------------------------
-    # Consolidated dim: floc_object_type_dim
-    #   - union all 3 silver tables
-    #   - choose "best" object_type deterministically
+    # Silver: master union (authoritative official scope fact table)
     # ----------------------------
-    dim = build_floc_object_type_dim(pd.concat([s_trans, s_dist_hf, s_dist_nhf], ignore_index=True))
+    master = pd.concat([s_trans, s_dist_hf, s_dist_nhf], ignore_index=True, sort=False)
+    metrics["write_silver_master"] = _write_whole_table(master, layer="silver", dataset=SILVER_MASTER, run=run)
+
+    # ----------------------------
+    # Silver: dim (authoritative floc attributes for downstream joins)
+    # ----------------------------
+    dim = build_floc_attributes_dim(master)
     dim["run_date"] = run.run_date
     dim["run_id"] = run.run_id
     dim["source_system"] = "OFFICIAL_SCOPE_MASTER"
 
-    metrics["write_silver_floc_dim"] = _write_whole_table(dim, layer="silver", dataset=SILVER_FLOC_DIM, run=run)
+    metrics["write_silver_floc_attr_dim"] = _write_whole_table(dim, layer="silver", dataset=SILVER_FLOC_ATTR_DIM, run=run)
 
     return metrics
