@@ -78,6 +78,8 @@ def silverize_scope_table(
     return out
 
 
+import pandas as pd
+
 def build_floc_attributes_dim(df_master: pd.DataFrame) -> pd.DataFrame:
     """
     Build authoritative FLOC attributes from official scope master.
@@ -89,36 +91,44 @@ def build_floc_attributes_dim(df_master: pd.DataFrame) -> pd.DataFrame:
       - scope_lists / asset_classes (forensics)
     """
     df = df_master.copy()
+
+    # Ensure columns exist and are clean-ish strings
     df["floc"] = df["floc"].astype("string").str.strip()
     df["object_type"] = df["object_type"].astype("string").str.strip()
-    if "voltage" in df.columns:
-        df["voltage"] = df["voltage"].astype("string").str.strip()
+    if "voltage" not in df.columns:
+        df["voltage"] = pd.NA
+    df["voltage"] = df["voltage"].astype("string").str.strip()
 
     def join_unique(s: pd.Series) -> str | None:
-        vals = [v for v in s.dropna().astype(str).str.strip().tolist() if v]
+        # Drop NA safely; keep non-empty unique values in stable order
+        vals = []
         seen = set()
-        uniq = []
-        for v in vals:
-            if v not in seen:
+        for v in s.dropna().astype("string").str.strip().tolist():
+            if v and v not in seen:
                 seen.add(v)
-                uniq.append(v)
-        return ";".join(uniq) if uniq else None
+                vals.append(v)
+        return ";".join(vals) if vals else None
 
     g = df.groupby("floc", dropna=False)
 
     out = g.agg(
         object_type_values=("object_type", join_unique),
-        voltage_values=("voltage", join_unique) if "voltage" in df.columns else ("floc", "size"),
+        voltage_values=("voltage", join_unique),
         scope_lists=("scope_list", join_unique),
         asset_classes=("asset_class", join_unique),
         row_count=("floc", "size"),
     ).reset_index()
 
-    def pick_best_object_type(values: str | None) -> str | None:
-        if not values:
+    def pick_best_object_type(values) -> str | None:
+        # pd.NA safe
+        if values is None or pd.isna(values):
             return None
-        parts = values.split(";")
-        # Priority (tweak anytime):
+        s = str(values).strip()
+        if s == "":
+            return None
+        parts = [p.strip() for p in s.split(";") if p.strip()]
+
+        # Priority (tweak anytime)
         if "EZ_POLE" in parts:
             return "EZ_POLE"
         if "ET_TOWER" in parts:
@@ -129,14 +139,18 @@ def build_floc_attributes_dim(df_master: pd.DataFrame) -> pd.DataFrame:
             return "ED_POLE"
         return parts[0] if parts else None
 
-    def pick_voltage(values: str | None) -> str | None:
-        if not values:
+    def pick_voltage(values) -> str | None:
+        # pd.NA safe
+        if values is None or pd.isna(values):
             return None
-        parts = [p for p in values.split(";") if p.strip()]
+        s = str(values).strip()
+        if s == "":
+            return None
+        parts = [p.strip() for p in s.split(";") if p.strip()]
         return parts[0] if parts else None
 
     out["object_type"] = out["object_type_values"].apply(pick_best_object_type)
-    out["voltage"] = out["voltage_values"].apply(pick_voltage) if "voltage_values" in out.columns else pd.NA
+    out["voltage"] = out["voltage_values"].apply(pick_voltage)
 
     preferred = [
         "floc",
@@ -150,3 +164,4 @@ def build_floc_attributes_dim(df_master: pd.DataFrame) -> pd.DataFrame:
     ]
     cols = [c for c in preferred if c in out.columns] + [c for c in out.columns if c not in preferred]
     return out[cols]
+
