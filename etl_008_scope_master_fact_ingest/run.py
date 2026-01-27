@@ -1,4 +1,3 @@
-# src/inspections_lakehouse/etl/etl_008_official_scope_master/run.py
 from __future__ import annotations
 
 import argparse
@@ -12,7 +11,7 @@ PIPELINE_NAME = "etl_008_official_scope_master"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="ETL008 - Official Scope Master intake (3 XLSX: trans HF, dist HF, dist non-HF)."
+        description="ETL008 - Official scope master intake (3 XLSX: trans HF, dist HF, dist non-HF)."
     )
     p.add_argument("--trans-hf", required=True, help="Path to Transmission High-Fire scope XLSX.")
     p.add_argument("--dist-hf", required=True, help="Path to Distribution High-Fire scope XLSX.")
