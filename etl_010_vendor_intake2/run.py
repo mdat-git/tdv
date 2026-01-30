@@ -5,13 +5,21 @@ import argparse
 from pathlib import Path
 from typing import Dict, Any
 
+from inspections_lakehouse.util.paths import paths
 from inspections_lakehouse.util.run_logging import start_run, succeed_run, fail_run
 from inspections_lakehouse.etl.etl_010_vendor_invoices_intake.pipeline import run_pipeline, PIPELINE
 
 
 def main() -> None:
+    default_stg = paths.uploads_dir(category="stg", partitions={"dataset": "invoices"}, ensure=False)
+
     p = argparse.ArgumentParser(description="ETL010 - Vendor invoice intake (attachments + Ariba HTML regex parsing)")
-    p.add_argument("--stg-root", type=str, required=True, help="Path to stg/invoices (contains attachments/ and email_html/)")
+    p.add_argument(
+        "--stg-root",
+        type=str,
+        default=str(default_stg),
+        help="Path to stg/invoices (contains attachments/ and email_html/). Defaults to INSPECTIONS_UPLOADS/stg/invoices",
+    )
     p.add_argument("--source-system", type=str, default="ARIBA_EMAIL_EXPORT")
     args = p.parse_args()
 
