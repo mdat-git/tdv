@@ -11,14 +11,16 @@ from inspections_lakehouse.etl.etl_010_vendor_invoices_intake.pipeline import ru
 
 
 def main() -> None:
-    default_stg = paths.uploads_dir(category="stg", partitions={"dataset": "invoices"}, ensure=False)
+    # uploads_dir("stg") should resolve to: .../INSPECTIONS_UPLOADS/stg
+    # then we want: .../INSPECTIONS_UPLOADS/stg/invoices
+    default_stg_root = Path(paths.uploads_dir(category="stg", partitions={}, ensure=False)) / "invoices"
 
     p = argparse.ArgumentParser(description="ETL010 - Vendor invoice intake (attachments + Ariba HTML regex parsing)")
     p.add_argument(
         "--stg-root",
         type=str,
-        default=str(default_stg),
-        help="Path to stg/invoices (contains attachments/ and email_html/). Defaults to INSPECTIONS_UPLOADS/stg/invoices",
+        default=str(default_stg_root),
+        help="Path to .../INSPECTIONS_UPLOADS/stg/invoices (contains attachments/ and email_html/).",
     )
     p.add_argument("--source-system", type=str, default="ARIBA_EMAIL_EXPORT")
     args = p.parse_args()
