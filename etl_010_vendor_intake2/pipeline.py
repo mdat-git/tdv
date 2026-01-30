@@ -18,9 +18,7 @@ from inspections_lakehouse.etl.etl_010_vendor_invoices_intake.silverize import (
 
 PIPELINE = "etl_010_vendor_invoices_intake"
 
-
 ATT_RE = re.compile(r"^att__(?P<message_id>[^_]+)__(?P<invoice_name>.+)\.xlsx$", re.IGNORECASE)
-HTML_NAME = "email__{message_id}_.html"
 
 
 def _read_text(p: Path) -> str:
@@ -45,17 +43,12 @@ def _write_whole_table(df: pd.DataFrame, *, layer: Layer, dataset: str, run) -> 
 
 def _archive_inputs(
     *,
-    stg_attachments: Path,
-    stg_html: Path,
-    message_id: str,
     attachment_path: Path,
     html_path: Path,
     run,
 ) -> Tuple[str, str]:
     """
     Copy raw files to uploads archive for provenance.
-    Uses shutil (as requested).
-    Returns (saved_attachment_path, saved_html_path) as strings.
     """
     base = Path(
         paths.uploads_dir(
@@ -99,25 +92,25 @@ def run_pipeline(*, run, stg_root: Path, source_system: str = "ARIBA_EMAIL_EXPOR
         "stg_root": str(stg_root),
     }
 
-    # Index HTML by message_id
+    # Index HTML by message_id from filename: email__{message_id}_.html
     html_by_msg: Dict[str, Path] = {}
     for hp in html_files:
-        # expected: email__{message_id}_.html
         m = re.match(r"^email__(?P<message_id>[^_]+)_\.html$", hp.name, re.IGNORECASE)
         if m:
             html_by_msg[m.group("message_id")] = hp
 
     file_manifest_rows: List[Dict[str, Any]] = []
     header_rows: List[Dict[str, Any]] = []
-    line_rows: List[pd.DataFrame] = []
+    line_frames: List[pd.DataFrame] = []
 
     orphan_attachments: List[str] = []
+    orphan_html: List[str] = []
     parsed_ok = 0
+    skipped_bad_floc = 0
 
     for ap in attachments:
         m = ATT_RE.match(ap.name)
         if not m:
-            # skip non-conforming
             continue
 
         message_id = m.group("message_id")
@@ -137,19 +130,29 @@ def run_pipeline(*, run, stg_root: Path, source_system: str = "ARIBA_EMAIL_EXPOR
         header_kvs, raw_lines = read_invoice_excel_first_sheet(str(ap))
         lines = canonicalize_invoice_lines(raw_lines)
 
-        # Archive raw inputs
-        saved_att, saved_html = _archive_inputs(
-            stg_attachments=att_dir,
-            stg_html=html_dir,
-            message_id=message_id,
-            attachment_path=ap,
-            html_path=hp,
-            run=run,
-        )
+        # Optional hard validation: FLOC must start with OH-
+        bad_floc = lines[~lines["floc_is_valid_oh"].fillna(False)]
+        if len(bad_floc) > 0:
+            file_manifest_rows.append(
+                {
+                    "message_id": message_id,
+                    "attachment_file": ap.name,
+                    "html_file": hp.name,
+                    "invoice_name_from_attachment": invoice_name,
+                    "run_date": run.run_date,
+                    "run_id": run.run_id,
+                    "source_system": source_system,
+                    "status": "FAILED_VALIDATION_BAD_FLOC",
+                    "bad_floc_sample": ";".join(bad_floc["floc_id"].astype("string").head(5).tolist()),
+                }
+            )
+            skipped_bad_floc += 1
+            continue
 
-        # ----------------------------
-        # Build HEADER row
-        # ----------------------------
+        # Archive raw inputs
+        saved_att, saved_html = _archive_inputs(attachment_path=ap, html_path=hp, run=run)
+
+        # Header row (no invoice_reconciliation_id)
         def hk(label: str) -> Optional[str]:
             return header_kvs.get(label.lower().strip())
 
@@ -162,7 +165,6 @@ def run_pipeline(*, run, stg_root: Path, source_system: str = "ARIBA_EMAIL_EXPOR
                 # from HTML (reliable)
                 "supplier": meta.supplier,
                 "supplier_invoice_number": meta.supplier_invoice_number,
-                "invoice_reconciliation_id": meta.invoice_reconciliation_id,
                 "on_behalf_of_preparer": meta.on_behalf_of_preparer,
                 "invoice_date_html": meta.invoice_date,
                 "company_code_html": meta.company_code,
@@ -189,22 +191,17 @@ def run_pipeline(*, run, stg_root: Path, source_system: str = "ARIBA_EMAIL_EXPOR
             }
         )
 
-        # ----------------------------
-        # Build LINE rows
-        # ----------------------------
-        lines = lines.copy()
-        lines.insert(0, "message_id", message_id)
-        lines.insert(1, "supplier", meta.supplier)
-        lines.insert(2, "supplier_invoice_number", meta.supplier_invoice_number)
-        lines.insert(3, "invoice_reconciliation_id", meta.invoice_reconciliation_id)
-        lines.insert(4, "run_date", run.run_date)
-        lines.insert(5, "run_id", run.run_id)
-        lines.insert(6, "source_system", source_system)
+        # Line rows: add stable metadata columns
+        lines2 = lines.copy()
+        lines2.insert(0, "message_id", message_id)
+        lines2.insert(1, "supplier", meta.supplier)
+        lines2.insert(2, "supplier_invoice_number", meta.supplier_invoice_number)
+        lines2.insert(3, "run_date", run.run_date)
+        lines2.insert(4, "run_id", run.run_id)
+        lines2.insert(5, "source_system", source_system)
+        lines2.insert(6, "line_number", range(1, len(lines2) + 1))
 
-        # stable line_number
-        lines.insert(7, "line_number", range(1, len(lines) + 1))
-
-        line_rows.append(lines)
+        line_frames.append(lines2)
 
         # Manifest
         file_manifest_rows.append(
@@ -233,23 +230,23 @@ def run_pipeline(*, run, stg_root: Path, source_system: str = "ARIBA_EMAIL_EXPOR
         if m:
             att_msg_ids.add(m.group("message_id"))
 
-    orphan_html = [p.name for mid, p in html_by_msg.items() if mid not in att_msg_ids]
+    for mid, p in html_by_msg.items():
+        if mid not in att_msg_ids:
+            orphan_html.append(p.name)
 
     metrics["orphans"] = {
         "orphan_attachments_count": len(orphan_attachments),
         "orphan_html_count": len(orphan_html),
         "orphan_attachments_sample": orphan_attachments[:10],
         "orphan_html_sample": orphan_html[:10],
-        "parsed_ok": parsed_ok,
     }
+    metrics["parsed"] = {"parsed_ok": parsed_ok, "skipped_bad_floc": skipped_bad_floc}
 
     df_manifest = pd.DataFrame(file_manifest_rows)
     df_header = pd.DataFrame(header_rows)
-    df_lines = pd.concat(line_rows, ignore_index=True, sort=False) if line_rows else pd.DataFrame()
+    df_lines = pd.concat(line_frames, ignore_index=True, sort=False) if line_frames else pd.DataFrame()
 
-    # ----------------------------
-    # Write datasets
-    # ----------------------------
+    # Writes
     metrics["write_bronze_manifest"] = _write_whole_table(
         df_manifest,
         layer="bronze",
